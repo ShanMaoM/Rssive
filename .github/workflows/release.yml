@@ -1,43 +1,43 @@
 name: Release Desktop
 
-  on:
-    push:
-      tags:
-        - "v*"
+on:
+  push:
+    tags:
+      - "v*"
 
-  permissions:
-    contents: write
+permissions:
+  contents: write
 
-  jobs:
-    build-and-release:
-      runs-on: windows-latest
+jobs:
+  build-and-release:
+    runs-on: windows-latest
 
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        - name: Setup Node
-          uses: actions/setup-node@v4
-          with:
-            node-version: 22
-            cache: npm
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
-        - name: Install root deps
-          run: npm ci
+      - name: Install root deps
+        run: npm ci
 
-        - name: Install desktop deps
-          run: npm --prefix desktop ci
+      - name: Install desktop deps
+        run: npm --prefix desktop ci
 
-        - name: Build web
-          run: npm run build
+      - name: Build web
+        run: npm run build
 
-        - name: Build desktop installer
-          run: npm --prefix desktop run pack:win
+      - name: Build desktop installer
+        run: npm --prefix desktop run pack:win
 
-        - name: Publish release assets
-          uses: softprops/action-gh-release@v2
-          with:
-            files: |
-              desktop/release/*.exe
-              desktop/release/*.blockmap
-              desktop/release/*.yml
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/*.yml
