@@ -1,0 +1,25 @@
+{
+  "name": "rssive-desktop",
+  "private": true,
+  "version": "1.0.0-beta",
+  "author": "ShanMao",
+  "description": "Rssive desktop runtime (Electron + IPC)",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-preload.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron .",
+    "pack:win": "npm run build && node ../scripts/verify-release-baseline.mjs && electron-builder --config electron-builder.yml --win nsis"
+  },
+  "dependencies": {
+    "rss-parser": "^3.13.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "~5.9.3"
+  }
+}

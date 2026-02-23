@@ -1,0 +1,15 @@
+appId: com.rssive.desktop
+productName: Rssive
+directories:
+  output: release
+files:
+  - dist/**
+  - assets/**
+win:
+  icon: assets/app-icon.ico
+  target:
+    - nsis
+nsis:
+  installerIcon: assets/app-icon.ico
+  uninstallerIcon: assets/app-icon.ico
+  installerHeaderIcon: assets/app-icon.ico
