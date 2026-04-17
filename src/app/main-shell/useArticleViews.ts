@@ -1,7 +1,9 @@
 // @ts-nocheck
 import { useCallback, useDeferredValue, useMemo } from 'react'
-import { Camera, Coffee, Layout, Rss } from 'lucide-react'
+import { Camera, Coffee, Layout, Rss, Star } from 'lucide-react'
 import { buildSearchMap, matchesSearch, normalizeQuery } from '../../modules/search'
+
+export const FAVORITES_CATEGORY_ID = 'favorites'
 
 const CATEGORY_ICON_MAP = {
   all: Layout,
@@ -17,6 +19,7 @@ export const useArticleViews = ({
   selectedCategory,
   selectedFeedId,
   searchQuery,
+  showUnreadOnly,
   isSyncingFeeds,
   contextMenuFeedId,
   language,
@@ -34,6 +37,11 @@ export const useArticleViews = ({
   }, [feeds, selectedCategory])
 
   const sidebarCategories = useMemo(() => {
+    const favoritesCategory = {
+      id: FAVORITES_CATEGORY_ID,
+      name: t('nav.favorites'),
+      icon: Star,
+    }
     const managedCategories = feedCategories.map(category => ({
       id: category.id,
       name: category.id === 'life'
@@ -45,7 +53,7 @@ export const useArticleViews = ({
             : category.name,
       icon: CATEGORY_ICON_MAP[category.id] || Rss,
     }))
-    return [{ id: 'all', name: t('nav.timeline'), icon: Layout }, ...managedCategories]
+    return [{ id: 'all', name: t('nav.timeline'), icon: Layout }, favoritesCategory, ...managedCategories]
   }, [feedCategories, t])
 
   const deferredSearchQuery = useDeferredValue(searchQuery)
@@ -64,6 +72,10 @@ export const useArticleViews = ({
   const syncTimestampFormatter = useMemo(() => new Intl.DateTimeFormat(language, {
     month: 'short',
     day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }), [language])
+  const syncTimeOnlyFormatter = useMemo(() => new Intl.DateTimeFormat(language, {
     hour: '2-digit',
     minute: '2-digit',
   }), [language])
@@ -89,6 +101,31 @@ export const useArticleViews = ({
     if (Number.isNaN(parsed.getTime())) return ''
     return syncTimestampFormatter.format(parsed)
   }, [syncTimestampFormatter])
+
+  const formatRelativeLastSync = useCallback((value) => {
+    if (!value) return ''
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return ''
+
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const targetStart = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+    const dayDiff = Math.floor((todayStart.getTime() - targetStart.getTime()) / (24 * 60 * 60 * 1000))
+
+    if (dayDiff <= 0) {
+      return syncTimeOnlyFormatter.format(parsed)
+    }
+    if (dayDiff === 1) {
+      return t('list.relativeYesterday')
+    }
+    if (dayDiff === 2) {
+      return t('list.relativeDayBeforeYesterday')
+    }
+    if (dayDiff > 10) {
+      return t('list.relativeLongAgo')
+    }
+    return t('list.relativeDaysAgo', { days: dayDiff })
+  }, [syncTimeOnlyFormatter, t])
 
   const articleSortTimestampById = useMemo(() => {
     const map = new Map()
@@ -146,8 +183,8 @@ export const useArticleViews = ({
   const syncStatusPrimary = useMemo(() => {
     if (isSyncingFeeds) return t('list.syncingFeeds')
     if (!latestSyncAt) return t('list.lastSyncNever')
-    return t('list.lastSyncAt', { time: formatSyncTimestamp(latestSyncAt) })
-  }, [isSyncingFeeds, latestSyncAt, formatSyncTimestamp, t])
+    return t('list.lastSyncAt', { time: formatRelativeLastSync(latestSyncAt) })
+  }, [isSyncingFeeds, latestSyncAt, formatRelativeLastSync, t])
 
   const syncStatusSecondary = useMemo(() => {
     if (isSyncingFeeds) return ''
@@ -168,20 +205,28 @@ export const useArticleViews = ({
 
   const navigableArticles = useMemo(() => {
     return sortedArticles.filter(article => {
-      const matchesCategory = selectedCategory === 'all' || feedCategoryMap.get(article.feedId) === selectedCategory
+      const matchesCategory = selectedCategory === 'all'
+        || (selectedCategory === FAVORITES_CATEGORY_ID
+          ? article.isStarred
+          : feedCategoryMap.get(article.feedId) === selectedCategory)
       const matchesFeed = selectedFeedId == null || article.feedId === selectedFeedId
-      return matchesCategory && matchesFeed
+      const matchesUnread = !showUnreadOnly || !article.isRead
+      return matchesCategory && matchesFeed && matchesUnread
     })
-  }, [sortedArticles, selectedCategory, selectedFeedId, feedCategoryMap])
+  }, [sortedArticles, selectedCategory, selectedFeedId, showUnreadOnly, feedCategoryMap])
 
   const filteredArticles = useMemo(() => {
     return sortedArticles.filter(article => {
       const matchesQuery = hasSearchQuery
         ? matchesSearch(searchIndex?.get(article.id), normalizedSearchQuery)
         : true
-      const matchesCategory = selectedCategory === 'all' || feedCategoryMap.get(article.feedId) === selectedCategory
+      const matchesCategory = selectedCategory === 'all'
+        || (selectedCategory === FAVORITES_CATEGORY_ID
+          ? article.isStarred
+          : feedCategoryMap.get(article.feedId) === selectedCategory)
       const matchesFeed = selectedFeedId == null || article.feedId === selectedFeedId
-      return matchesQuery && matchesCategory && matchesFeed
+      const matchesUnread = !showUnreadOnly || !article.isRead
+      return matchesQuery && matchesCategory && matchesFeed && matchesUnread
     })
   }, [
     sortedArticles,
@@ -190,6 +235,7 @@ export const useArticleViews = ({
     normalizedSearchQuery,
     selectedCategory,
     selectedFeedId,
+    showUnreadOnly,
     feedCategoryMap,
   ])
 
@@ -205,4 +251,3 @@ export const useArticleViews = ({
     filteredArticles,
   }
 }
-

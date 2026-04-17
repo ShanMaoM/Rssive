@@ -129,7 +129,7 @@ const Switch = React.memo(function Switch({ checked, onChange, disabled = false 
       onClick={() => {
         if (!disabled) onChange(!checked);
       }}
-      className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border p-0.5 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent-border)] ${
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full border transition-colors duration-300 ease-in-out motion-reduce:transition-none focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent-border)] ${
         checked
           ? 'border-stone-900 bg-stone-900 dark:border-stone-100 dark:bg-stone-100'
           : 'border-stone-300 bg-stone-200 dark:border-stone-700 dark:bg-stone-800'
@@ -140,7 +140,7 @@ const Switch = React.memo(function Switch({ checked, onChange, disabled = false 
       disabled={disabled}
     >
       <span
-        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full shadow transition duration-200 ease-out ${
+        className={`pointer-events-none absolute left-[2px] top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-black/10 shadow transition-transform duration-300 ease-in-out motion-reduce:transition-none dark:border-white/15 ${
           checked
             ? 'translate-x-5 bg-white dark:bg-stone-900'
             : 'translate-x-0 bg-white dark:bg-stone-200'
@@ -198,7 +198,7 @@ type SettingCardProps = {
 
 const SettingCard = React.memo(function SettingCard({ kicker, title, description, children }: SettingCardProps) {
   return (
-    <section className="rounded-2xl border border-stone-200/80 bg-white/90 shadow-sm dark:border-stone-800 dark:bg-stone-900/60">
+    <section className="settings-performance-card rounded-2xl border border-stone-200/80 bg-white/90 shadow-sm dark:border-stone-800 dark:bg-stone-900/60">
       <header className="border-b border-stone-200/80 px-5 py-4 dark:border-stone-800">
         <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-stone-400 dark:text-stone-500">
           {kicker}
@@ -220,6 +220,7 @@ const inputClass =
 
 const selectClass =
   'w-full rounded-xl border border-stone-200 bg-stone-50/70 px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-[color:var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-900/80 dark:text-stone-200 dark:focus:border-[color:var(--color-accent)]';
+const settingsRowSelectClass = `${selectClass} w-[170px] min-w-[120px] max-w-[45vw]`;
 
 type SelectOption<T extends string> = {
   value: T;
@@ -233,6 +234,14 @@ type DropdownSelectProps<T extends string> = {
   className?: string;
 };
 
+type DropdownMenuLayout = {
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+  openUpward: boolean;
+};
+
 const DropdownSelectInner = <T extends string,>({
   value,
   options,
@@ -242,14 +251,46 @@ const DropdownSelectInner = <T extends string,>({
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuLayout, setMenuLayout] = useState<DropdownMenuLayout | null>(null);
   const selected = options.find(option => option.value === value) || options[0];
 
+  const updateMenuLayout = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const viewportPadding = 8;
+    const gap = 6;
+    const maxMenuHeight = 224;
+    const minMenuHeight = 120;
+
+    const width = Math.max(160, Math.round(rect.width));
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - width - viewportPadding);
+    const left = Math.min(Math.max(rect.left, viewportPadding), maxLeft);
+
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openUpward = spaceBelow < 180 && spaceAbove > spaceBelow;
+    const available = Math.max(0, (openUpward ? spaceAbove : spaceBelow) - gap);
+    const maxHeight = Math.max(minMenuHeight, Math.min(maxMenuHeight, available || maxMenuHeight));
+    const top = openUpward ? rect.top - gap : rect.bottom + gap;
+
+    setMenuLayout({ top, left, width, maxHeight, openUpward });
+  }, []);
+
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setMenuLayout(null);
+      return;
+    }
+    updateMenuLayout();
+
     const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setIsOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -257,13 +298,21 @@ const DropdownSelectInner = <T extends string,>({
         triggerRef.current?.focus();
       }
     };
+    const handleViewportChange = () => {
+      updateMenuLayout();
+    };
+
     window.addEventListener('mousedown', handlePointerDown);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
     return () => {
       window.removeEventListener('mousedown', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
     };
-  }, [isOpen]);
+  }, [isOpen, updateMenuLayout]);
 
   return (
     <div className="relative" ref={rootRef}>
@@ -281,42 +330,55 @@ const DropdownSelectInner = <T extends string,>({
           className={`ml-2 shrink-0 text-stone-400 transition-transform dark:text-stone-500 ${isOpen ? 'rotate-180' : ''}`}
         />
       </button>
-      {isOpen ? (
-        <div className="absolute left-0 right-0 top-full z-[70] mt-1 overflow-hidden rounded-xl border border-stone-200/90 bg-white/95 shadow-[0_18px_40px_rgba(0,0,0,0.18)] backdrop-blur dark:border-stone-700 dark:bg-stone-900/95">
-          <ul role="listbox" className="max-h-56 overflow-y-auto custom-scrollbar">
-            {options.map((option, index) => {
-              const isSelected = option.value === selected?.value;
-              const isFirst = index === 0;
-              const isLast = index === options.length - 1;
-              return (
-                <li
-                  key={option.value}
-                  className={`${isFirst ? 'rounded-t-[11px]' : ''} ${
-                    isLast ? 'rounded-b-[11px]' : ''
-                  } overflow-hidden ${isLast ? '' : 'border-b border-stone-100/80 dark:border-stone-800/80'}`}
-                >
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={isSelected}
-                    onClick={() => {
-                      onChange(option.value);
-                      setIsOpen(false);
-                    }}
-                    className={`flex w-full items-center px-3 py-2.5 text-left text-sm transition-colors ${
-                      isSelected
-                        ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent-strong)] dark:bg-[var(--color-accent-soft-dark)] dark:text-stone-100'
-                        : 'text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800/90'
-                    }`}
+      {isOpen && menuLayout && typeof document !== 'undefined'
+        ? createPortal(
+          <div
+            ref={menuRef}
+            className={`fixed z-[11000] overflow-hidden rounded-xl border border-stone-200/90 bg-white/95 shadow-[0_18px_40px_rgba(0,0,0,0.18)] dark:border-stone-700 dark:bg-stone-900/95 ${
+              menuLayout.openUpward ? '-translate-y-full' : ''
+            }`}
+            style={{
+              top: menuLayout.top,
+              left: menuLayout.left,
+              width: menuLayout.width,
+            }}
+          >
+            <ul role="listbox" className="overflow-y-auto custom-scrollbar" style={{ maxHeight: menuLayout.maxHeight }}>
+              {options.map((option, index) => {
+                const isSelected = option.value === selected?.value;
+                const isFirst = index === 0;
+                const isLast = index === options.length - 1;
+                return (
+                  <li
+                    key={option.value}
+                    className={`${isFirst ? 'rounded-t-[11px]' : ''} ${
+                      isLast ? 'rounded-b-[11px]' : ''
+                    } overflow-hidden ${isLast ? '' : 'border-b border-stone-100/80 dark:border-stone-800/80'}`}
                   >
-                    <span className="truncate">{option.label}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ) : null}
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      onClick={() => {
+                        onChange(option.value);
+                        setIsOpen(false);
+                      }}
+                      className={`flex w-full items-center px-3 py-2.5 text-left text-sm transition-colors ${
+                        isSelected
+                          ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent-strong)] dark:bg-[var(--color-accent-soft-dark)] dark:text-stone-100'
+                          : 'text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800/90'
+                      }`}
+                    >
+                      <span className="truncate">{option.label}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>,
+          document.body,
+        )
+        : null}
     </div>
   );
 };
@@ -453,7 +515,7 @@ const SettingsSidebarNav = React.memo(function SettingsSidebarNav({
         </div>
       </div>
 
-      <nav className="custom-scrollbar flex-1 overflow-y-auto px-3 py-4">
+      <nav className="custom-scrollbar settings-panel-nav flex-1 overflow-y-auto px-3 py-4">
         {SETTINGS_SECTIONS.map((item) => {
           const Icon = item.icon;
           const isActive = activeSection === item.id;
@@ -499,7 +561,7 @@ const SettingsPanelHeader = React.memo(function SettingsPanelHeader({
   t,
 }: SettingsPanelHeaderProps) {
   return (
-    <header className="flex h-20 items-center justify-between border-b border-stone-200/80 bg-white/85 px-7 backdrop-blur dark:border-stone-800 dark:bg-stone-950/85">
+    <header className="settings-panel-header flex h-20 items-center justify-between border-b border-stone-200/80 bg-white/85 px-7 dark:border-stone-800 dark:bg-stone-950/85">
       <div className="min-w-0">
         <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-stone-400 dark:text-stone-500">
           {t(activeSectionMeta.descriptionKey)}
@@ -549,7 +611,7 @@ const AboutSectionContent = React.memo(function AboutSectionContent({
   } = state;
 
   return (
-    <div className="space-y-6 animate-slide-in-up">
+    <div className="space-y-6 settings-section-content">
       <SettingCard kicker={t('settings.about.kicker')} title={t('settings.about.title')}>
         <div className="rounded-xl border border-stone-200/80 bg-white px-4 py-4 dark:border-stone-700 dark:bg-stone-900/70">
           <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400 dark:text-stone-500">{t('common.version')}</div>
@@ -668,7 +730,7 @@ const AiSectionContent = React.memo(function AiSectionContent({
   } = state;
 
   return (
-    <div className="space-y-6 animate-slide-in-up">
+    <div className="space-y-6 settings-section-content">
       <SettingCard
         kicker={t('settings.aiControls.kicker')}
         title={t('settings.aiControls.title')}
@@ -875,7 +937,7 @@ const SettingsSectionContent = React.memo(function SettingsSectionContent({
                 articleFontOptions,
               } = state;
               return (
-              <div className="space-y-6 animate-slide-in-up">
+              <div className="space-y-6 settings-section-content">
                 <SettingCard
                   kicker={t('settings.appearance.kicker')}
                   title={t('settings.appearance.title')}
@@ -1025,7 +1087,7 @@ const SettingsSectionContent = React.memo(function SettingsSectionContent({
                       description={t('settings.interfaceLanguage.description')}
                     >
                       <DropdownSelect
-                        className={selectClass}
+                        className={settingsRowSelectClass}
                         value={interfaceLanguage}
                         options={interfaceLanguageOptions}
                         onChange={(value) => setInterfaceLanguage(value as InterfaceLanguagePreference)}
@@ -1060,7 +1122,7 @@ const SettingsSectionContent = React.memo(function SettingsSectionContent({
                       isLast={true}
                     >
                       <DropdownSelect
-                        className={`${selectClass} min-w-[96px]`}
+                        className={settingsRowSelectClass}
                         value={String(refreshIntervalMinutes)}
                         options={refreshIntervalOptions}
                         onChange={(value) => setRefreshIntervalMinutes(Number(value) as RssRefreshIntervalPreference)}
@@ -1160,7 +1222,7 @@ const SettingsSectionContent = React.memo(function SettingsSectionContent({
                 ttsProviderCapability,
               } = state;
               return (
-              <div className="space-y-6 animate-slide-in-up">
+              <div className="space-y-6 settings-section-content">
                 <SettingCard
                   kicker={t('settings.tts.kicker')}
                   title={t('settings.tts.title')}
@@ -1395,7 +1457,12 @@ const SettingsSectionContent = React.memo(function SettingsSectionContent({
     </>
   );
 });
-export function SettingsPage({ onPreferencesChange, onRequestClose, isOpen = true }: SettingsPageProps) {
+
+export const SettingsPage = React.memo(function SettingsPage({
+  onPreferencesChange,
+  onRequestClose,
+  isOpen = true,
+}: SettingsPageProps) {
   const { t } = useI18nRead();
   const { setLanguage } = useI18nActions();
   const [shouldRender, setShouldRender] = useState(false);
@@ -1754,15 +1821,17 @@ export function SettingsPage({ onPreferencesChange, onRequestClose, isOpen = tru
   const activeThemeColor =
     THEME_COLOR_OPTIONS.find(option => option.value === themeColor) ?? THEME_COLOR_OPTIONS[0];
   const getLanguageOptionLabel = useCallback((value: string) => {
-    if (value === 'zh-CN') return t('language.chineseSimplifiedNative');
-    if (value === 'zh') return t('language.chineseSimplified');
-    if (value === 'en') return t('language.english');
-    if (value === 'ja') return t('language.japanese');
-    if (value === 'ko') return t('language.korean');
-    if (value === 'fr') return t('language.french');
-    if (value === 'de') return t('language.german');
-    return t('language.spanish');
-  }, [t]);
+    if (value === 'zh-CN') return '简体中文';
+    if (value === 'zh') return '中文';
+    if (value === 'en') return 'English';
+    if (value === 'en-US') return 'English';
+    if (value === 'ja') return '日本語';
+    if (value === 'ko') return '한국어';
+    if (value === 'fr') return 'Français';
+    if (value === 'de') return 'Deutsch';
+    if (value === 'es') return 'Español';
+    return value;
+  }, []);
   const interfaceLanguageOptions = useMemo(() => {
     if (activeSection !== 'appearance') return EMPTY_SELECT_OPTIONS;
     return INTERFACE_LANGUAGE_OPTIONS.map(option => ({
@@ -2245,18 +2314,13 @@ export function SettingsPage({ onPreferencesChange, onRequestClose, isOpen = tru
       className={`fixed inset-0 z-[9999] flex items-center justify-center transition-opacity duration-180 ${
         isVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
-      style={{ zIndex: 2147483647 }}
       role="dialog"
       aria-modal="true"
       aria-label={t('settings.dialogLabel')}
     >
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-[3px]" aria-hidden="true" />
-      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-        <div className="absolute -left-24 top-20 h-64 w-64 rounded-full bg-[var(--color-accent-soft)] blur-3xl" />
-        <div className="absolute right-16 top-10 h-52 w-52 rounded-full bg-sky-500/10 blur-3xl" />
-      </div>
+      <div className="settings-overlay-backdrop absolute inset-0 bg-black/38" aria-hidden="true" />
 
-      <div className={`relative flex h-[min(820px,92vh)] w-[min(1040px,94vw)] overflow-hidden rounded-[26px] border border-stone-200/90 bg-[#fbfbf9] shadow-[0_35px_90px_rgba(0,0,0,0.22)] transition-transform duration-180 dark:border-stone-800 dark:bg-stone-950 ${
+      <div className={`settings-panel-shell relative flex h-[min(820px,92vh)] w-[min(1040px,94vw)] overflow-hidden rounded-[26px] border border-stone-200/90 bg-[#fbfbf9] shadow-[0_20px_52px_rgba(0,0,0,0.2)] transition-transform duration-180 dark:border-stone-800 dark:bg-stone-950 ${
         isVisible ? 'translate-y-0 scale-100' : 'translate-y-1 scale-[0.995]'
       }`}>
         <SettingsSidebarNav
@@ -2272,7 +2336,7 @@ export function SettingsPage({ onPreferencesChange, onRequestClose, isOpen = tru
             t={t}
           />
 
-          <div className="custom-scrollbar flex-1 overflow-y-auto px-7 pt-6 pb-24">
+          <div className="custom-scrollbar settings-panel-scroll flex-1 overflow-y-auto px-7 pt-6 pb-24">
             <SettingsSectionContent
               activeSection={activeSection}
               t={t}
@@ -2289,6 +2353,6 @@ export function SettingsPage({ onPreferencesChange, onRequestClose, isOpen = tru
   );
 
   return createPortal(content, document.body);
-}
+});
 
 

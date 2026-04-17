@@ -1,8 +1,9 @@
 // @ts-nocheck
-import React, { Suspense, lazy, startTransition, useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   BrainCircuit,
+  ChevronDown,
   MessageSquare,
   Mic,
 } from 'lucide-react'
@@ -23,34 +24,40 @@ import {
   type AiTaskLog,
   type AiTaskStatus,
 } from '../modules/ai'
-import { addFeed, loadFeeds, removeFeed, updateFeed } from '../modules/feeds/storage'
+import { addFeed, loadFeeds, removeFeed, replaceFeeds, updateFeed } from '../modules/feeds/storage'
 import {
   fetchAutoFeedIcon,
+  isFeedIconImage,
   normalizeFeedIconSource,
   shouldRefreshAutoFeedIcon,
 } from '../modules/feeds/icon'
 import {
   DEFAULT_FEED_CATEGORY_ID,
+  addFeedCategory,
   loadFeedCategories,
+  removeFeedCategory,
+  updateFeedCategory,
   type FeedCategoryRecord,
 } from '../modules/feeds/categories'
 import {
   clearEntries,
   loadEntries,
+  markEntriesRead,
   removeEntriesByFeedIds,
   toggleEntryRead,
   toggleEntryStar,
   updateEntryState,
   upsertEntries,
 } from '../modules/articles/storage'
+import { estimateReadMinutesFromContent } from '../modules/articles/readTime'
 import { syncFeeds } from '../modules/feeds/rss'
 import { checkProxyHealth, fetchHtmlViaProxy } from '../shared/services/rssProxy'
 import { extractReadable } from '../shared/services/readability'
 import { isDesktopGatewayRuntime } from '../shared/services/runtimeGateway'
 import { writeDeveloperLog } from '../shared/services/logger'
-import { useArticleViews } from './main-shell/useArticleViews'
-import { OverlayLoadingFallback } from './main-shell/common-ui'
+import { FAVORITES_CATEGORY_ID, useArticleViews } from './main-shell/useArticleViews'
 import { ArticleListPane, ReaderPane, SidebarPane } from './main-shell/panes'
+import { SettingsPage } from './SettingsPage'
 import {
   buildTtsText,
   createTtsController,
@@ -120,12 +127,6 @@ import {
 import { I18nProvider, useI18nRead } from '../modules/i18n/context'
 import { DesktopWindowTitleBar } from './DesktopWindowTitleBar'
 
-const SettingsPageLazy = lazy(() =>
-  import('./SettingsPage').then(module => ({ default: module.SettingsPage }))
-)
-const RssManagerPageLazy = lazy(() =>
-  import('./RssManagerPage').then(module => ({ default: module.RssManagerPage }))
-)
 const READABLE_MEMORY_LIMIT = 30
 const OFFLINE_STATUS_MEMORY_LIMIT = 80
 const AI_SUMMARY_MEMORY_LIMIT = 80
@@ -134,6 +135,7 @@ const AI_ERROR_MEMORY_LIMIT = 120
 const AI_STATUS_MEMORY_LIMIT = 160
 const AUTO_ICON_ATTEMPT_LIMIT = 400
 const OVERLAY_KEEP_ALIVE_MS = 90_000
+const UNREAD_LEAVE_ANIMATION_MS = 220
 const EMPTY_COMMAND_ITEMS: any[] = []
 const EMPTY_COMMAND_PALETTE_ARTICLES: any[] = []
 
@@ -209,114 +211,80 @@ const retainAiCacheRecord = <T,>(
 
 type MainShellOverlaysProps = {
   keepSettingsOverlayMounted: boolean;
-  keepRssManagerOverlayMounted: boolean;
   isSettingsOpen: boolean;
-  isRssManagerOpen: boolean;
   settingsVisualOpen: boolean;
-  rssManagerVisualOpen: boolean;
-  closeOverlayRoute: (origin?: 'settings' | 'rss' | null) => void;
+  closeOverlayRoute: (origin?: 'settings' | null) => void;
   markSettingsSyncPending: () => void;
-  markFeedsSyncPending: (options?: { reloadEntries?: boolean }) => void;
 };
 
 const MainShellOverlays = React.memo(function MainShellOverlays({
   keepSettingsOverlayMounted,
-  keepRssManagerOverlayMounted,
   isSettingsOpen,
-  isRssManagerOpen,
   settingsVisualOpen,
-  rssManagerVisualOpen,
   closeOverlayRoute,
   markSettingsSyncPending,
-  markFeedsSyncPending,
 }: MainShellOverlaysProps) {
-  if (!(keepSettingsOverlayMounted || keepRssManagerOverlayMounted || isSettingsOpen || isRssManagerOpen)) {
+  if (!(keepSettingsOverlayMounted || isSettingsOpen)) {
     return null;
   }
 
   return (
-    <Suspense fallback={(isSettingsOpen || isRssManagerOpen) ? <OverlayLoadingFallback /> : null}>
-      {(keepSettingsOverlayMounted || isSettingsOpen) && (
-        <I18nProvider>
-          <SettingsPageLazy
-            isOpen={settingsVisualOpen}
-            onRequestClose={() => closeOverlayRoute('settings')}
-            onPreferencesChange={markSettingsSyncPending}
-          />
-        </I18nProvider>
-      )}
-      {(keepRssManagerOverlayMounted || isRssManagerOpen) && (
-        <RssManagerPageLazy
-          isOpen={rssManagerVisualOpen}
-          onRequestClose={() => closeOverlayRoute('rss')}
-          onFeedsChange={markFeedsSyncPending}
-        />
-      )}
-    </Suspense>
+    <I18nProvider>
+      <SettingsPage
+        isOpen={settingsVisualOpen}
+        onRequestClose={() => closeOverlayRoute('settings')}
+        onPreferencesChange={markSettingsSyncPending}
+      />
+    </I18nProvider>
   );
 });
 
 type MainShellOverlayControllerProps = {
   navigateWithDesktopFallback: (path: string, options?: { replace?: boolean }) => void;
-  preloadSettingsOverlay: () => void;
-  preloadRssManagerOverlay: () => void;
-  bindCloseOverlayRoute: (handler: (origin?: 'settings' | 'rss' | null) => void) => void;
+  bindCloseOverlayRoute: (handler: (origin?: 'settings' | null) => void) => void;
   overlayOpenRef: React.MutableRefObject<boolean>;
   onOverlayRouteClosed: () => void;
   markSettingsSyncPending: () => void;
-  markFeedsSyncPending: (options?: { reloadEntries?: boolean }) => void;
 };
 
 const MainShellOverlayController = React.memo(function MainShellOverlayController({
   navigateWithDesktopFallback,
-  preloadSettingsOverlay,
-  preloadRssManagerOverlay,
   bindCloseOverlayRoute,
   overlayOpenRef,
   onOverlayRouteClosed,
   markSettingsSyncPending,
-  markFeedsSyncPending,
 }: MainShellOverlayControllerProps) {
   const location = useLocation();
   const hashPath = typeof window !== 'undefined' ? (window.location.hash || '').replace(/^#/, '') : '';
   const isSettingsOpen = location.pathname.startsWith('/settings') || hashPath.startsWith('/settings');
-  const isRssManagerOpen = location.pathname.startsWith('/rss/manage') || hashPath.startsWith('/rss/manage');
-  const isRouteOverlayOpen = isSettingsOpen || isRssManagerOpen;
+  const isRouteOverlayOpen = isSettingsOpen;
   const [keepSettingsOverlayMounted, setKeepSettingsOverlayMounted] = useState(isSettingsOpen);
-  const [keepRssManagerOverlayMounted, setKeepRssManagerOverlayMounted] = useState(isRssManagerOpen);
   const [settingsVisualOpen, setSettingsVisualOpen] = useState(isSettingsOpen);
-  const [rssManagerVisualOpen, setRssManagerVisualOpen] = useState(isRssManagerOpen);
   const closeOverlayTimerRef = useRef<number | null>(null);
-  const closingOverlayRef = useRef<'settings' | 'rss' | null>(null);
+  const closingOverlayRef = useRef<'settings' | null>(null);
   const settingsResidentTimerRef = useRef<number | null>(null);
-  const rssResidentTimerRef = useRef<number | null>(null);
   const wasRouteOverlayOpenRef = useRef(isRouteOverlayOpen);
 
-  const closeOverlayRoute = useCallback((origin: 'settings' | 'rss' | null = null) => {
+  const closeOverlayRoute = useCallback((origin: 'settings' | null = null) => {
     if (typeof window === 'undefined') {
       navigateWithDesktopFallback('/', { replace: true });
       return;
     }
 
-    const activeOverlay: 'settings' | 'rss' | null = origin
-      ?? (isRssManagerOpen ? 'rss' : isSettingsOpen ? 'settings' : null);
+    const activeOverlay: 'settings' | null = origin ?? (isSettingsOpen ? 'settings' : null);
     if (!activeOverlay) {
       navigateWithDesktopFallback('/', { replace: true });
       return;
     }
 
-    const isVisible = activeOverlay === 'settings' ? settingsVisualOpen : rssManagerVisualOpen;
+    const isVisible = settingsVisualOpen;
     if (!isVisible) {
       navigateWithDesktopFallback('/', { replace: true });
       return;
     }
 
     closingOverlayRef.current = activeOverlay;
-    if (activeOverlay === 'settings') {
-      setSettingsVisualOpen(false);
-    } else {
-      setRssManagerVisualOpen(false);
-    }
+    setSettingsVisualOpen(false);
     if (closeOverlayTimerRef.current != null) {
       window.clearTimeout(closeOverlayTimerRef.current);
     }
@@ -326,10 +294,8 @@ const MainShellOverlayController = React.memo(function MainShellOverlayControlle
       navigateWithDesktopFallback('/', { replace: true });
     }, 180);
   }, [
-    isRssManagerOpen,
     isSettingsOpen,
     navigateWithDesktopFallback,
-    rssManagerVisualOpen,
     settingsVisualOpen,
   ]);
 
@@ -338,8 +304,8 @@ const MainShellOverlayController = React.memo(function MainShellOverlayControlle
   }, [bindCloseOverlayRoute, closeOverlayRoute]);
 
   useEffect(() => {
-    overlayOpenRef.current = isRouteOverlayOpen || settingsVisualOpen || rssManagerVisualOpen;
-  }, [isRouteOverlayOpen, overlayOpenRef, rssManagerVisualOpen, settingsVisualOpen]);
+    overlayOpenRef.current = isRouteOverlayOpen || settingsVisualOpen;
+  }, [isRouteOverlayOpen, overlayOpenRef, settingsVisualOpen]);
 
   useEffect(() => {
     if (wasRouteOverlayOpenRef.current && !isRouteOverlayOpen) {
@@ -367,24 +333,6 @@ const MainShellOverlayController = React.memo(function MainShellOverlayControlle
   }, [isSettingsOpen]);
 
   useEffect(() => {
-    if (isRssManagerOpen) {
-      if (rssResidentTimerRef.current != null && typeof window !== 'undefined') {
-        window.clearTimeout(rssResidentTimerRef.current);
-        rssResidentTimerRef.current = null;
-      }
-      setKeepRssManagerOverlayMounted(true);
-      setRssManagerVisualOpen(true);
-      if (closingOverlayRef.current === 'rss') {
-        closingOverlayRef.current = null;
-      }
-      return;
-    }
-    if (closingOverlayRef.current !== 'rss') {
-      setRssManagerVisualOpen(false);
-    }
-  }, [isRssManagerOpen]);
-
-  useEffect(() => {
     if (typeof window === 'undefined') return;
     if (isSettingsOpen || settingsVisualOpen || !keepSettingsOverlayMounted) return;
     if (settingsResidentTimerRef.current != null) {
@@ -397,18 +345,6 @@ const MainShellOverlayController = React.memo(function MainShellOverlayControlle
   }, [isSettingsOpen, keepSettingsOverlayMounted, settingsVisualOpen]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (isRssManagerOpen || rssManagerVisualOpen || !keepRssManagerOverlayMounted) return;
-    if (rssResidentTimerRef.current != null) {
-      window.clearTimeout(rssResidentTimerRef.current);
-    }
-    rssResidentTimerRef.current = window.setTimeout(() => {
-      setKeepRssManagerOverlayMounted(false);
-      rssResidentTimerRef.current = null;
-    }, OVERLAY_KEEP_ALIVE_MS);
-  }, [isRssManagerOpen, keepRssManagerOverlayMounted, rssManagerVisualOpen]);
-
-  useEffect(() => {
     return () => {
       if (closeOverlayTimerRef.current != null && typeof window !== 'undefined') {
         window.clearTimeout(closeOverlayTimerRef.current);
@@ -416,49 +352,112 @@ const MainShellOverlayController = React.memo(function MainShellOverlayControlle
       if (settingsResidentTimerRef.current != null && typeof window !== 'undefined') {
         window.clearTimeout(settingsResidentTimerRef.current);
       }
-      if (rssResidentTimerRef.current != null && typeof window !== 'undefined') {
-        window.clearTimeout(rssResidentTimerRef.current);
-      }
     };
   }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    let timerId: number | null = null;
-    let idleId: number | null = null;
-    const preloadOverlays = () => {
-      preloadSettingsOverlay();
-      preloadRssManagerOverlay();
-    };
-
-    if ('requestIdleCallback' in window) {
-      idleId = window.requestIdleCallback(preloadOverlays, { timeout: 1500 });
-    } else {
-      timerId = window.setTimeout(preloadOverlays, 350);
-    }
-
-    return () => {
-      if (timerId != null) {
-        window.clearTimeout(timerId);
-      }
-      if (idleId != null && 'cancelIdleCallback' in window) {
-        window.cancelIdleCallback(idleId);
-      }
-    };
-  }, [preloadRssManagerOverlay, preloadSettingsOverlay]);
 
   return (
     <MainShellOverlays
       keepSettingsOverlayMounted={keepSettingsOverlayMounted}
-      keepRssManagerOverlayMounted={keepRssManagerOverlayMounted}
       isSettingsOpen={isSettingsOpen}
-      isRssManagerOpen={isRssManagerOpen}
       settingsVisualOpen={settingsVisualOpen}
-      rssManagerVisualOpen={rssManagerVisualOpen}
       closeOverlayRoute={closeOverlayRoute}
       markSettingsSyncPending={markSettingsSyncPending}
-      markFeedsSyncPending={markFeedsSyncPending}
     />
+  );
+});
+
+type CategoryOption = {
+  value: string;
+  label: string;
+};
+
+type CategoryDropdownProps = {
+  value: string;
+  options: CategoryOption[];
+  onChange: (value: string) => void;
+};
+
+const CategoryDropdown = React.memo(function CategoryDropdown({
+  value,
+  options,
+  onChange,
+}: CategoryDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find(option => option.value === value) || options[0] || null;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setIsOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen(prev => !prev)}
+        className="flex w-full items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+      >
+        <span className="truncate text-left">{selected?.label || ''}</span>
+        <ChevronDown
+          size={14}
+          className={`ml-2 shrink-0 text-stone-400 transition-transform dark:text-stone-500 ${isOpen ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-[50] overflow-hidden rounded-xl border border-stone-200/90 bg-white/95 shadow-[0_18px_40px_rgba(0,0,0,0.18)] dark:border-stone-700 dark:bg-stone-900/95">
+          <ul role="listbox" className="max-h-52 overflow-y-auto custom-scrollbar">
+            {options.map((option, index) => {
+              const isSelected = option.value === selected?.value;
+              const isFirst = index === 0;
+              const isLast = index === options.length - 1;
+              return (
+                <li
+                  key={option.value}
+                  className={`${isFirst ? 'rounded-t-[11px]' : ''} ${isLast ? 'rounded-b-[11px]' : ''} overflow-hidden ${
+                    isLast ? '' : 'border-b border-stone-100/80 dark:border-stone-800/80'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    onClick={() => {
+                      onChange(option.value);
+                      setIsOpen(false);
+                    }}
+                    className={`flex w-full items-center px-3 py-2.5 text-left text-sm transition-colors ${
+                      isSelected
+                        ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent-strong)] dark:bg-[var(--color-accent-soft-dark)] dark:text-stone-100'
+                        : 'text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800/90'
+                    }`}
+                  >
+                    <span className="truncate">{option.label}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 });
 
@@ -478,11 +477,25 @@ type MainShellChromeProps = {
   setTtsIncludeAuthor: React.Dispatch<React.SetStateAction<boolean>>;
   setTtsIncludeSource: React.Dispatch<React.SetStateAction<boolean>>;
   t: (key: string, params?: Record<string, string | number | null | undefined>) => string;
-  feedContextMenu: { open: boolean; x: number; y: number; feedId: number | null };
+  feedContextMenu: {
+    open: boolean;
+    x: number;
+    y: number;
+    feedId: number | null;
+    categoryId: string | null;
+    target: 'blank' | 'feed' | 'category';
+  };
   contextMenuFeed: any;
+  contextMenuCategory: FeedCategoryRecord | null;
   closeFeedContextMenu: () => void;
   handleManualRefreshFeed: (feedId: number) => Promise<void>;
-  openRssManagerRoute: () => void;
+  openAddFeedDialog: (preferredCategoryId?: string | null) => void;
+  openEditFeedDialog: (feedId: number) => void;
+  openEditFeedIconDialog: (feedId: number) => void;
+  openAddCategoryDialog: () => void;
+  openRenameCategoryDialog: (categoryId: string) => void;
+  handleDeleteFeed: (feedId: number) => void;
+  handleDeleteCategory: (categoryId: string) => void;
   isMobile: boolean;
   isFocusMode: boolean;
   showSidebar: boolean;
@@ -508,9 +521,16 @@ const MainShellChrome = React.memo(function MainShellChrome({
   t,
   feedContextMenu,
   contextMenuFeed,
+  contextMenuCategory,
   closeFeedContextMenu,
   handleManualRefreshFeed,
-  openRssManagerRoute,
+  openAddFeedDialog,
+  openEditFeedDialog,
+  openEditFeedIconDialog,
+  openAddCategoryDialog,
+  openRenameCategoryDialog,
+  handleDeleteFeed,
+  handleDeleteCategory,
   isMobile,
   isFocusMode,
   showSidebar,
@@ -611,30 +631,119 @@ const MainShellChrome = React.memo(function MainShellChrome({
           role="menu"
           aria-label={t('nav.subscriptions')}
         >
-          {contextMenuFeed && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                closeFeedContextMenu();
-                void handleManualRefreshFeed(contextMenuFeed.id);
-              }}
-              className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
-            >
-              {t('list.refreshFeed', { feed: contextMenuFeed.title })}
-            </button>
+          {feedContextMenu.target === 'feed' && contextMenuFeed && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  void handleManualRefreshFeed(contextMenuFeed.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('list.refreshFeed', { feed: contextMenuFeed.title })}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  openEditFeedDialog(contextMenuFeed.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('sidebar.editSubscription')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  openEditFeedIconDialog(contextMenuFeed.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('sidebar.editIcon')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  handleDeleteFeed(contextMenuFeed.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+              >
+                {t('sidebar.deleteSubscription')}
+              </button>
+            </>
           )}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              closeFeedContextMenu();
-              openRssManagerRoute();
-            }}
-            className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
-          >
-            {t('nav.manageRssFeeds')}
-          </button>
+
+          {feedContextMenu.target === 'category' && contextMenuCategory && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  openAddFeedDialog(contextMenuCategory.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('sidebar.addSubscription')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  openRenameCategoryDialog(contextMenuCategory.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('sidebar.renameCategory')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  handleDeleteCategory(contextMenuCategory.id);
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+              >
+                {t('sidebar.deleteCategory')}
+              </button>
+            </>
+          )}
+
+          {feedContextMenu.target === 'blank' && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  openAddFeedDialog();
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('sidebar.addSubscription')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeFeedContextMenu();
+                  openAddCategoryDialog();
+                }}
+                className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-stone-800"
+              >
+                {t('sidebar.newCategory')}
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -693,23 +802,9 @@ const MainShellCore = React.memo(function MainShellCore() {
     }, 0);
   }, [isDesktopShell]);
 
-  const preloadSettingsOverlay = useCallback(() => {
-    void import('./SettingsPage');
-  }, []);
-
-  const preloadRssManagerOverlay = useCallback(() => {
-    void import('./RssManagerPage');
-  }, []);
-
   const openSettingsRoute = useCallback(() => {
-    preloadSettingsOverlay();
     navigateWithDesktopFallback('/settings');
-  }, [navigateWithDesktopFallback, preloadSettingsOverlay]);
-
-  const openRssManagerRoute = useCallback(() => {
-    preloadRssManagerOverlay();
-    navigateWithDesktopFallback('/rss/manage');
-  }, [navigateWithDesktopFallback, preloadRssManagerOverlay]);
+  }, [navigateWithDesktopFallback]);
   // --- Global State & Persistence ---
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
     try { return localStorage.getItem('rss-sidebar') !== 'closed'; } catch { return true; }
@@ -749,6 +844,8 @@ const MainShellCore = React.memo(function MainShellCore() {
   const [selectedFeedId, setSelectedFeedId] = useState<number | null>(null);
   const [selectedArticleId, setSelectedArticleId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [leavingUnreadIds, setLeavingUnreadIds] = useState<Record<number, boolean>>({});
   const [lightboxSrc, setLightboxSrc] = useState(null);
   const [feeds, setFeeds] = useState([]);
   const [feedCategories, setFeedCategories] = useState<FeedCategoryRecord[]>(() => loadFeedCategories());
@@ -758,7 +855,26 @@ const MainShellCore = React.memo(function MainShellCore() {
   const [newFeedName, setNewFeedName] = useState('');
   const [newFeedUrl, setNewFeedUrl] = useState('');
   const [newFeedCategory, setNewFeedCategory] = useState(DEFAULT_FEED_CATEGORY_ID);
-  const [feedContextMenu, setFeedContextMenu] = useState({ open: false, x: 0, y: 0, feedId: null });
+  const [showEditFeed, setShowEditFeed] = useState(false);
+  const [editingFeedId, setEditingFeedId] = useState<number | null>(null);
+  const [editFeedName, setEditFeedName] = useState('');
+  const [editFeedUrl, setEditFeedUrl] = useState('');
+  const [editFeedCategory, setEditFeedCategory] = useState(DEFAULT_FEED_CATEGORY_ID);
+  const [showFeedIconEditor, setShowFeedIconEditor] = useState(false);
+  const [iconEditingFeedId, setIconEditingFeedId] = useState<number | null>(null);
+  const [editFeedIconUrl, setEditFeedIconUrl] = useState('');
+  const [showCategoryEditor, setShowCategoryEditor] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState('');
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Record<string, boolean>>({});
+  const [feedContextMenu, setFeedContextMenu] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+    feedId: number | null;
+    categoryId: string | null;
+    target: 'blank' | 'feed' | 'category';
+  }>({ open: false, x: 0, y: 0, feedId: null, categoryId: null, target: 'blank' });
   const [readableById, setReadableById] = useState({});
   const [renderedContent, setRenderedContent] = useState('');
   const [offlineStatusById, setOfflineStatusById] = useState({});
@@ -848,24 +964,39 @@ const MainShellCore = React.memo(function MainShellCore() {
   const translationAbortRef = useRef<AbortController | null>(null);
   const summaryTaskKeyRef = useRef<string | null>(null);
   const translationTaskKeyRef = useRef<string | null>(null);
+  const previousSelectedArticleIdRef = useRef<number | null>(null);
+  const previousFilterScopeKeyRef = useRef('all::all::0');
+  const unreadLeaveTimeoutByArticleRef = useRef<Record<number, number>>({});
+  const articlesRef = useRef(articles);
   const autoIconAttemptRef = useRef<Set<string>>(new Set());
   const syncInFlightRef = useRef(false);
   const overlayOpenRef = useRef(false);
-  const closeOverlayRouteRef = useRef<(origin?: 'settings' | 'rss' | null) => void>(() => {});
+  const closeOverlayRouteRef = useRef<(origin?: 'settings' | null) => void>(() => {});
   const settingsSyncPendingRef = useRef(false);
-  const feedsSyncPendingRef = useRef<{ pending: boolean; reloadEntries: boolean }>({
-    pending: false,
-    reloadEntries: false,
-  });
 
   useEffect(() => {
     syncInFlightRef.current = isSyncingFeeds;
   }, [isSyncingFeeds]);
+  useEffect(() => {
+    articlesRef.current = articles;
+  }, [articles]);
+  useEffect(() => {
+    return () => {
+      Object.values(unreadLeaveTimeoutByArticleRef.current).forEach(timeoutId => {
+        window.clearTimeout(timeoutId);
+      });
+      unreadLeaveTimeoutByArticleRef.current = {};
+    };
+  }, []);
 
   const activeArticle = useMemo(
     () => articles.find(article => article.id === selectedArticleId) || null,
     [articles, selectedArticleId]
   );
+  const activeFeedIcon = useMemo(() => {
+    if (!activeArticle) return '';
+    return feeds.find(feed => feed.id === activeArticle.feedId)?.icon || '';
+  }, [activeArticle, feeds]);
 
   useEffect(() => {
     const hasAnyEphemeralState = Boolean(
@@ -946,10 +1077,26 @@ const MainShellCore = React.memo(function MainShellCore() {
     [activeTranslation?.html],
   );
   const readerContentHtml = translatedContentHtml || renderedContent;
+  const activeReadTimeLabel = useMemo(() => {
+    if (!activeArticle) return '';
+    const contentForEstimate =
+      readerContentHtml
+      || activeReadableContent
+      || activeArticle.content
+      || activeArticle.summary
+      || activeArticle.title
+      || '';
+    const minutes = estimateReadMinutesFromContent(contentForEstimate);
+    return t('toolbar.readMinutes', { minutes });
+  }, [
+    activeArticle,
+    activeReadableContent,
+    readerContentHtml,
+    t,
+  ]);
   const showSidebar = isSidebarOpen && !isFocusMode;
   const showList = !isFocusMode && isListOpen;
   const {
-    filteredFeeds,
     sidebarCategories,
     formatArticleDate,
     syncStatusPrimary,
@@ -964,11 +1111,53 @@ const MainShellCore = React.memo(function MainShellCore() {
     selectedCategory,
     selectedFeedId,
     searchQuery,
+    showUnreadOnly,
     isSyncingFeeds,
     contextMenuFeedId: feedContextMenu.feedId,
     language,
     t,
   });
+  const filterScopeKey = useMemo(
+    () => `${selectedCategory}::${selectedFeedId ?? 'all'}::${showUnreadOnly ? 1 : 0}`,
+    [selectedCategory, selectedFeedId, showUnreadOnly],
+  );
+  const contextMenuCategory = useMemo(
+    () => feedCategories.find(category => category.id === feedContextMenu.categoryId) || null,
+    [feedCategories, feedContextMenu.categoryId],
+  );
+  const subscriptionGroups = useMemo(() => {
+    const fallbackCategoryId = feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID;
+    const grouped = new Map<string, any[]>();
+    feedCategories.forEach(category => grouped.set(category.id, []));
+    feeds.forEach(feed => {
+      const targetCategoryId = grouped.has(feed.categoryId) ? feed.categoryId : fallbackCategoryId;
+      const current = grouped.get(targetCategoryId);
+      if (current) current.push(feed);
+    });
+    return feedCategories.map(category => ({
+      id: category.id,
+      name: category.name,
+      feeds: grouped.get(category.id) || [],
+    }));
+  }, [feedCategories, feeds]);
+  const unreadCountByFeedId = useMemo(() => {
+    const counts: Record<number, number> = {};
+    articles.forEach(article => {
+      if (article.isRead) return;
+      const feedId = Number(article.feedId);
+      if (!Number.isFinite(feedId)) return;
+      counts[feedId] = (counts[feedId] || 0) + 1;
+    });
+    return counts;
+  }, [articles]);
+  const unreadArticlesCount = useMemo(
+    () => articles.reduce((total, article) => total + (article.isRead ? 0 : 1), 0),
+    [articles],
+  );
+  const categorySelectOptions = useMemo(
+    () => feedCategories.map(category => ({ value: category.id, label: category.name })),
+    [feedCategories],
+  );
 
   useEffect(() => {
     if (selectedFeedId == null) return;
@@ -976,7 +1165,7 @@ const MainShellCore = React.memo(function MainShellCore() {
     setSelectedFeedId(null);
   }, [feeds, selectedFeedId]);
   useEffect(() => {
-    if (selectedCategory === 'all') return;
+    if (selectedCategory === 'all' || selectedCategory === FAVORITES_CATEGORY_ID) return;
     if (feedCategories.some(category => category.id === selectedCategory)) return;
     setSelectedCategory('all');
   }, [feedCategories, selectedCategory]);
@@ -984,6 +1173,52 @@ const MainShellCore = React.memo(function MainShellCore() {
     if (feedCategories.some(category => category.id === newFeedCategory)) return;
     setNewFeedCategory(feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID);
   }, [feedCategories, newFeedCategory]);
+  useEffect(() => {
+    if (feedCategories.some(category => category.id === editFeedCategory)) return;
+    setEditFeedCategory(feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID);
+  }, [editFeedCategory, feedCategories]);
+  useEffect(() => {
+    if (selectedCategory !== FAVORITES_CATEGORY_ID) return;
+    if (selectedArticleId == null) return;
+    if (navigableArticles.some(article => article.id === selectedArticleId)) return;
+    setSelectedArticleId(navigableArticles[0]?.id ?? null);
+  }, [navigableArticles, selectedArticleId, selectedCategory]);
+  useEffect(() => {
+    const scopeChanged = previousFilterScopeKeyRef.current !== filterScopeKey;
+    if (!scopeChanged) return;
+    previousFilterScopeKeyRef.current = filterScopeKey;
+
+    if (!navigableArticles.length) {
+      setSelectedArticleId(null);
+      return;
+    }
+
+    if (selectedArticleId == null) {
+      setSelectedArticleId(navigableArticles[0].id);
+      return;
+    }
+
+    if (!navigableArticles.some(article => article.id === selectedArticleId)) {
+      setSelectedArticleId(navigableArticles[0].id);
+    }
+  }, [filterScopeKey, navigableArticles, selectedArticleId]);
+  useEffect(() => {
+    setCollapsedCategoryIds(prev => {
+      const validIds = new Set(feedCategories.map(category => category.id));
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      Object.entries(prev).forEach(([id, collapsed]) => {
+        if (!validIds.has(id)) {
+          changed = true;
+          return;
+        }
+        if (collapsed) {
+          next[id] = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [feedCategories]);
   const translationTargetLabel = useMemo(() => {
     const keyByValue: Record<string, string> = {
       en: 'language.english',
@@ -1172,19 +1407,29 @@ const MainShellCore = React.memo(function MainShellCore() {
     setIsSidebarOpen(false);
     setIsListOpen(false);
   }, [isMobile]);
-  const openFeedContextMenu = useCallback((event, feedId: number | null = null) => {
+  const openFeedContextMenu = useCallback((
+    event,
+    payload: {
+      target?: 'blank' | 'feed' | 'category';
+      feedId?: number | null;
+      categoryId?: string | null;
+    } = {},
+  ) => {
     event.preventDefault();
+    event.stopPropagation();
     setFeedContextMenu({
       open: true,
       x: event.clientX,
       y: event.clientY,
-      feedId,
+      feedId: payload.feedId ?? null,
+      categoryId: payload.categoryId ?? null,
+      target: payload.target ?? (payload.feedId != null ? 'feed' : payload.categoryId ? 'category' : 'blank'),
     });
   }, []);
   const closeFeedContextMenu = useCallback(() => {
     setFeedContextMenu(prev => (
       prev.open
-        ? { open: false, x: 0, y: 0, feedId: null }
+        ? { open: false, x: 0, y: 0, feedId: null, categoryId: null, target: 'blank' }
         : prev
     ));
   }, []);
@@ -1269,48 +1514,11 @@ const MainShellCore = React.memo(function MainShellCore() {
     });
   }, []);
 
-  const syncFeedStateFromStorage = useCallback((options: { reloadEntries?: boolean } = {}) => {
-    const { reloadEntries = true } = options;
-    const storedFeeds = loadFeeds();
-    const storedEntries = reloadEntries
-      ? (storedFeeds.length ? loadEntries() : clearEntries())
-      : null;
-
-    startTransition(() => {
-      setFeedCategories(loadFeedCategories());
-      setFeeds(storedFeeds);
-      if (!reloadEntries) return;
-      if (!storedFeeds.length) {
-        setArticles(storedEntries ?? []);
-        setSelectedArticleId(null);
-        return;
-      }
-      const nextEntries = storedEntries ?? [];
-      setArticles(nextEntries);
-      if (!nextEntries.length) {
-        setSelectedArticleId(null);
-        return;
-      }
-      setSelectedArticleId(prev => (
-        prev != null && nextEntries.some(entry => entry.id === prev)
-          ? prev
-          : nextEntries[0].id
-      ));
-    });
-  }, []);
-
   const markSettingsSyncPending = useCallback(() => {
     settingsSyncPendingRef.current = true;
   }, []);
 
-  const markFeedsSyncPending = useCallback((options: { reloadEntries?: boolean } = {}) => {
-    feedsSyncPendingRef.current = {
-      pending: true,
-      reloadEntries: feedsSyncPendingRef.current.reloadEntries || Boolean(options.reloadEntries),
-    };
-  }, []);
-
-  const bindCloseOverlayRoute = useCallback((handler: (origin?: 'settings' | 'rss' | null) => void) => {
+  const bindCloseOverlayRoute = useCallback((handler: (origin?: 'settings' | null) => void) => {
     closeOverlayRouteRef.current = handler;
   }, []);
 
@@ -1319,12 +1527,7 @@ const MainShellCore = React.memo(function MainShellCore() {
       settingsSyncPendingRef.current = false;
       runInIdle(syncPreferencesFromStorage, 1500);
     }
-    if (feedsSyncPendingRef.current.pending) {
-      const { reloadEntries } = feedsSyncPendingRef.current;
-      feedsSyncPendingRef.current = { pending: false, reloadEntries: false };
-      runInIdle(() => syncFeedStateFromStorage({ reloadEntries }), 1500);
-    }
-  }, [runInIdle, syncFeedStateFromStorage, syncPreferencesFromStorage]);
+  }, [runInIdle, syncPreferencesFromStorage]);
 
   const notifySyncFailure = useCallback(async () => {
     try {
@@ -1514,6 +1717,7 @@ const MainShellCore = React.memo(function MainShellCore() {
 
   // --- Handlers ---
   useEffect(() => {
+    let deferredInitialSyncTimer: number | null = null;
     setFeedCategories(loadFeedCategories());
     const storedFeeds = loadFeeds();
     setFeeds(storedFeeds);
@@ -1532,13 +1736,28 @@ const MainShellCore = React.memo(function MainShellCore() {
       setSelectedArticleId(articles[0].id);
     }
 
-    void runFeedSync({ mode: 'initial' });
+    if (overlayOpenRef.current && typeof window !== 'undefined') {
+      deferredInitialSyncTimer = window.setTimeout(() => {
+        if (!overlayOpenRef.current) {
+          void runFeedSync({ mode: 'initial' });
+        }
+      }, 1200);
+    } else {
+      void runFeedSync({ mode: 'initial' });
+    }
+
+    return () => {
+      if (deferredInitialSyncTimer != null && typeof window !== 'undefined') {
+        window.clearTimeout(deferredInitialSyncTimer);
+      }
+    };
   }, []);
 
   useEffect(() => {
     if (!feeds.length) return;
     const intervalMs = Math.max(1, refreshIntervalMinutes) * 60_000;
     const timer = window.setInterval(() => {
+      if (overlayOpenRef.current) return;
       if (syncInFlightRef.current) return;
       void runFeedSync({ mode: 'auto' });
     }, intervalMs);
@@ -1547,6 +1766,7 @@ const MainShellCore = React.memo(function MainShellCore() {
 
   useEffect(() => {
     if (!feeds.length) return;
+    if (overlayOpenRef.current) return;
     let cancelled = false;
 
     feeds.forEach(feed => {
@@ -1596,6 +1816,62 @@ const MainShellCore = React.memo(function MainShellCore() {
     }
   };
 
+  const openAddFeedDialog = useCallback((preferredCategoryId: string | null = null) => {
+    const fallbackCategory = feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID;
+    const preferredFromSelection = selectedCategory !== 'all' && feedCategories.some(category => category.id === selectedCategory)
+      ? selectedCategory
+      : null;
+    const nextCategory = preferredCategoryId && feedCategories.some(category => category.id === preferredCategoryId)
+      ? preferredCategoryId
+      : preferredFromSelection || fallbackCategory;
+    setNewFeedCategory(nextCategory);
+    setNewFeedName('');
+    setNewFeedUrl('');
+    setShowAddFeed(true);
+  }, [feedCategories, selectedCategory]);
+
+  const openEditFeedDialog = useCallback((feedId: number) => {
+    const target = feeds.find(feed => feed.id === feedId);
+    if (!target) return;
+    const fallbackCategory = feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID;
+    const normalizedCategory = feedCategories.some(category => category.id === target.categoryId)
+      ? target.categoryId
+      : fallbackCategory;
+    setEditingFeedId(feedId);
+    setEditFeedName(target.title);
+    setEditFeedUrl(target.url);
+    setEditFeedCategory(normalizedCategory);
+    setShowEditFeed(true);
+  }, [feedCategories, feeds]);
+
+  const openEditFeedIconDialog = useCallback((feedId: number) => {
+    const target = feeds.find(feed => feed.id === feedId);
+    if (!target) return;
+    const source = normalizeFeedIconSource(target.iconSource, target.icon);
+    const initialIconUrl = source === 'custom' && isFeedIconImage(target.icon) ? String(target.icon || '') : '';
+    setIconEditingFeedId(feedId);
+    setEditFeedIconUrl(initialIconUrl);
+    setShowFeedIconEditor(true);
+  }, [feeds]);
+
+  const openAddCategoryDialog = useCallback(() => {
+    setEditingCategoryId(null);
+    setEditingCategoryName('');
+    setShowCategoryEditor(true);
+  }, []);
+
+  const openRenameCategoryDialog = useCallback((categoryId: string) => {
+    const category = feedCategories.find(item => item.id === categoryId);
+    if (!category) return;
+    setEditingCategoryId(categoryId);
+    setEditingCategoryName(category.name);
+    setShowCategoryEditor(true);
+  }, [feedCategories]);
+
+  const toggleCategoryCollapsed = useCallback((categoryId: string) => {
+    setCollapsedCategoryIds(prev => ({ ...prev, [categoryId]: !prev[categoryId] }));
+  }, []);
+
   const handleAddFeed = async () => {
     const name = newFeedName.trim();
     const url = newFeedUrl.trim();
@@ -1614,7 +1890,9 @@ const MainShellCore = React.memo(function MainShellCore() {
       title: name,
       url,
       siteUrl: deriveSiteUrl(url),
-      categoryId: newFeedCategory,
+      categoryId: feedCategories.some(category => category.id === newFeedCategory)
+        ? newFeedCategory
+        : (feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID),
       iconSource: 'auto',
     });
 
@@ -1649,6 +1927,147 @@ const MainShellCore = React.memo(function MainShellCore() {
     });
   };
 
+  const handleUpdateFeed = async () => {
+    if (editingFeedId == null) return;
+    const name = editFeedName.trim();
+    const url = editFeedUrl.trim();
+    if (!name || !url) {
+      addToast(t('main.feedNameUrlRequired'), 'warning');
+      return;
+    }
+    try {
+      new URL(url);
+    } catch {
+      addToast(t('main.enterValidUrl'), 'warning');
+      return;
+    }
+
+    const fallbackCategory = feedCategories[0]?.id || DEFAULT_FEED_CATEGORY_ID;
+    const normalizedCategory = feedCategories.some(category => category.id === editFeedCategory)
+      ? editFeedCategory
+      : fallbackCategory;
+    const target = feeds.find(feed => feed.id === editingFeedId);
+    if (!target) return;
+
+    const nextFeeds = updateFeed(editingFeedId, {
+      title: name,
+      url,
+      siteUrl: deriveSiteUrl(url),
+      categoryId: normalizedCategory,
+    });
+    setFeeds(nextFeeds);
+    setShowEditFeed(false);
+    setEditingFeedId(null);
+    addToast(t('rssManager.notice.updatedFeed', { title: name }), 'success');
+
+    if (target.url !== url) {
+      addToast(t('main.fetchingFeedArticles', { feed: name }), 'info');
+      await runFeedSync({
+        feedIds: [editingFeedId],
+        preferredFeedId: editingFeedId,
+        force: true,
+        mode: 'manual-feed',
+      });
+    }
+  };
+
+  const handleSaveFeedIcon = useCallback(() => {
+    if (iconEditingFeedId == null) return;
+    const target = feeds.find(feed => feed.id === iconEditingFeedId);
+    if (!target) return;
+    const nextIconUrl = editFeedIconUrl.trim();
+    if (!nextIconUrl) {
+      const nextFeeds = updateFeed(iconEditingFeedId, { iconSource: 'auto', icon: '' });
+      setFeeds(nextFeeds);
+      setShowFeedIconEditor(false);
+      setIconEditingFeedId(null);
+      setEditFeedIconUrl('');
+      addToast(t('rssManager.notice.autoIconRestored', { title: target.title }), 'success');
+      return;
+    }
+    if (!isFeedIconImage(nextIconUrl)) {
+      addToast(t('rssManager.notice.iconUrlInvalid'), 'warning');
+      return;
+    }
+    const nextFeeds = updateFeed(iconEditingFeedId, {
+      iconSource: 'custom',
+      icon: nextIconUrl,
+    });
+    setFeeds(nextFeeds);
+    setShowFeedIconEditor(false);
+    setIconEditingFeedId(null);
+    addToast(t('rssManager.notice.customIconReady'), 'success');
+  }, [addToast, editFeedIconUrl, feeds, iconEditingFeedId, t]);
+
+  const handleSubmitCategory = useCallback(() => {
+    const name = editingCategoryName.trim();
+    if (!name) {
+      addToast(t('rssManager.notice.categoryNameRequired'), 'warning');
+      return;
+    }
+    if (editingCategoryId) {
+      try {
+        updateFeedCategory(editingCategoryId, name);
+        setFeedCategories(loadFeedCategories());
+        addToast(t('rssManager.notice.categoryUpdated'), 'success');
+        setShowCategoryEditor(false);
+        setEditingCategoryId(null);
+        setEditingCategoryName('');
+      } catch {
+        addToast(t('rssManager.notice.updateCategoryFailed'), 'warning');
+      }
+      return;
+    }
+
+    try {
+      const created = addFeedCategory(name);
+      setFeedCategories(loadFeedCategories());
+      setCollapsedCategoryIds(prev => ({ ...prev, [created.id]: false }));
+      setNewFeedCategory(created.id);
+      setSelectedCategory(created.id);
+      addToast(t('rssManager.notice.categoryAdded', { name: created.name }), 'success');
+      setShowCategoryEditor(false);
+      setEditingCategoryName('');
+    } catch {
+      addToast(t('rssManager.notice.addCategoryFailed'), 'warning');
+    }
+  }, [editingCategoryId, editingCategoryName, t]);
+
+  const handleDeleteCategory = useCallback((categoryId: string) => {
+    if (feedCategories.length <= 1) {
+      addToast(t('rssManager.notice.keepOneCategory'), 'warning');
+      return;
+    }
+    const fallbackCategory = feedCategories.find(category => category.id !== categoryId)?.id;
+    if (!fallbackCategory) {
+      addToast(t('rssManager.notice.noFallbackCategory'), 'warning');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const reassigned = feeds.map(feed => (
+      feed.categoryId === categoryId
+        ? { ...feed, categoryId: fallbackCategory, updatedAt: now }
+        : feed
+    ));
+    setFeeds(replaceFeeds(reassigned));
+    removeFeedCategory(categoryId);
+    setFeedCategories(loadFeedCategories());
+    setCollapsedCategoryIds(prev => {
+      if (!Object.prototype.hasOwnProperty.call(prev, categoryId)) return prev;
+      const next = { ...prev };
+      delete next[categoryId];
+      return next;
+    });
+    if (selectedCategory === categoryId) {
+      setSelectedCategory('all');
+    }
+    if (newFeedCategory === categoryId) {
+      setNewFeedCategory(fallbackCategory);
+    }
+    addToast(t('rssManager.notice.categoryDeleted'), 'info');
+  }, [addToast, feedCategories, feeds, newFeedCategory, selectedCategory, t]);
+
   const handleManualRefreshAll = useCallback(async () => {
     if (!feeds.length) return;
     addToast(t('main.fetchingLatestArticles'), 'info');
@@ -1667,7 +2086,7 @@ const MainShellCore = React.memo(function MainShellCore() {
     });
   }, [feeds, runFeedSync, t]);
 
-  const handleRemoveFeed = (id) => {
+  const handleDeleteFeed = useCallback((id: number) => {
     const removedFeed = feeds.find(feed => feed.id === id);
     const next = removeFeed(id);
     setFeeds(next);
@@ -1688,7 +2107,16 @@ const MainShellCore = React.memo(function MainShellCore() {
         url: removedFeed?.url,
       },
     });
-  };
+    if (editingFeedId === id) {
+      setShowEditFeed(false);
+      setEditingFeedId(null);
+    }
+    if (iconEditingFeedId === id) {
+      setShowFeedIconEditor(false);
+      setIconEditingFeedId(null);
+      setEditFeedIconUrl('');
+    }
+  }, [editingFeedId, feeds, iconEditingFeedId, selectedArticleId, t]);
 
   // --- Effects ---
 
@@ -1764,10 +2192,64 @@ const MainShellCore = React.memo(function MainShellCore() {
 
   // Loading Simulation & Scroll Reset
   const [isLoadingArticle, setIsLoadingArticle] = useState(false);
-  useEffect(() => {
-    if (activeArticle && !activeArticle.isRead) {
-      setArticles(prev => updateEntryState(activeArticle.id, { isRead: true }, prev));
+  const scheduleMarkReadAfterLeaveAnimation = useCallback((articleId: number) => {
+    if (typeof window === 'undefined') {
+      setArticles(prev => updateEntryState(articleId, { isRead: true }, prev));
+      return;
     }
+
+    setLeavingUnreadIds(prev => (
+      prev[articleId]
+        ? prev
+        : { ...prev, [articleId]: true }
+    ));
+    const existingTimeout = unreadLeaveTimeoutByArticleRef.current[articleId];
+    if (existingTimeout != null) {
+      window.clearTimeout(existingTimeout);
+    }
+
+    unreadLeaveTimeoutByArticleRef.current[articleId] = window.setTimeout(() => {
+      delete unreadLeaveTimeoutByArticleRef.current[articleId];
+      setArticles(prev => {
+        const target = prev.find(article => article.id === articleId);
+        if (!target || target.isRead) return prev;
+        return updateEntryState(articleId, { isRead: true }, prev);
+      });
+      setLeavingUnreadIds(prev => {
+        if (!prev[articleId]) return prev;
+        const next = { ...prev };
+        delete next[articleId];
+        return next;
+      });
+    }, UNREAD_LEAVE_ANIMATION_MS);
+  }, []);
+  const cancelUnreadLeaveAnimation = useCallback((articleId: number) => {
+    const timeoutId = unreadLeaveTimeoutByArticleRef.current[articleId];
+    if (timeoutId != null && typeof window !== 'undefined') {
+      window.clearTimeout(timeoutId);
+      delete unreadLeaveTimeoutByArticleRef.current[articleId];
+    }
+    setLeavingUnreadIds(prev => {
+      if (!prev[articleId]) return prev;
+      const next = { ...prev };
+      delete next[articleId];
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const previousSelectedArticleId = previousSelectedArticleIdRef.current;
+    if (previousSelectedArticleId != null) {
+      const previousArticle = articlesRef.current.find(article => article.id === previousSelectedArticleId);
+      if (previousArticle && !previousArticle.isRead) {
+        if (showUnreadOnly) {
+          scheduleMarkReadAfterLeaveAnimation(previousSelectedArticleId);
+        } else {
+          setArticles(prev => updateEntryState(previousSelectedArticleId, { isRead: true }, prev));
+        }
+      }
+    }
+    previousSelectedArticleIdRef.current = selectedArticleId;
+
     setIsLoadingArticle(true);
     const timer = setTimeout(() => setIsLoadingArticle(false), 300);
 
@@ -1810,7 +2292,7 @@ const MainShellCore = React.memo(function MainShellCore() {
     }
 
     return () => clearTimeout(timer);
-  }, [selectedArticleId]);
+  }, [selectedArticleId, showUnreadOnly, scheduleMarkReadAfterLeaveAnimation]);
 
   useEffect(() => {
     if (!activeArticle || !summaryCacheKey) return;
@@ -2432,9 +2914,10 @@ const MainShellCore = React.memo(function MainShellCore() {
 
   const handleToggleRead = useCallback(() => {
     if (!activeArticle) return;
+    cancelUnreadLeaveAnimation(activeArticle.id);
     setArticles(prev => toggleEntryRead(activeArticle.id, prev));
     addToast(activeArticle.isRead ? t('main.markedUnread') : t('main.markedRead'), 'info');
-  }, [activeArticle, addToast, t]);
+  }, [activeArticle, addToast, cancelUnreadLeaveAnimation, t]);
 
   const handleToggleStar = useCallback(() => {
     if (!activeArticle) return;
@@ -2453,13 +2936,41 @@ const MainShellCore = React.memo(function MainShellCore() {
       setSearchQuery(nextValue);
     });
   }, [startSearchTransition]);
+  const handleToggleUnreadOnly = useCallback(() => {
+    setShowUnreadOnly(prev => !prev);
+  }, []);
   const handleSelectArticle = useCallback((articleId: number) => {
     setSelectedArticleId(articleId);
     if (isMobile) setIsListOpen(false);
   }, [isMobile]);
   const handleMarkAllRead = useCallback(() => {
+    const unreadIds = filteredArticles
+      .filter(article => !article.isRead)
+      .map(article => article.id);
+    if (!unreadIds.length) {
+      addToast(t('list.allItemsMarkedRead'));
+      return;
+    }
+
+    setArticles(prev => markEntriesRead(unreadIds, prev));
+    setLeavingUnreadIds(prev => {
+      let changed = false;
+      const next = { ...prev };
+      unreadIds.forEach(articleId => {
+        const timeoutId = unreadLeaveTimeoutByArticleRef.current[articleId];
+        if (timeoutId != null) {
+          window.clearTimeout(timeoutId);
+          delete unreadLeaveTimeoutByArticleRef.current[articleId];
+        }
+        if (Object.prototype.hasOwnProperty.call(next, articleId)) {
+          delete next[articleId];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
     addToast(t('list.allItemsMarkedRead'));
-  }, [addToast, t]);
+  }, [addToast, filteredArticles, t]);
   const handleManualRefreshAllClick = useCallback(() => {
     void handleManualRefreshAll();
   }, [handleManualRefreshAll]);
@@ -2565,9 +3076,16 @@ const MainShellCore = React.memo(function MainShellCore() {
         t={t}
         feedContextMenu={feedContextMenu}
         contextMenuFeed={contextMenuFeed}
+        contextMenuCategory={contextMenuCategory}
         closeFeedContextMenu={closeFeedContextMenu}
         handleManualRefreshFeed={handleManualRefreshFeed}
-        openRssManagerRoute={openRssManagerRoute}
+        openAddFeedDialog={openAddFeedDialog}
+        openEditFeedDialog={openEditFeedDialog}
+        openEditFeedIconDialog={openEditFeedIconDialog}
+        openAddCategoryDialog={openAddCategoryDialog}
+        openRenameCategoryDialog={openRenameCategoryDialog}
+        handleDeleteFeed={handleDeleteFeed}
+        handleDeleteCategory={handleDeleteCategory}
         isMobile={isMobile}
         isFocusMode={isFocusMode}
         showSidebar={showSidebar}
@@ -2584,9 +3102,14 @@ const MainShellCore = React.memo(function MainShellCore() {
         setSelectedCategory={setSelectedCategory}
         setSelectedFeedId={setSelectedFeedId}
         articlesCount={articlesCount}
+        unreadArticlesCount={unreadArticlesCount}
         openFeedContextMenu={openFeedContextMenu}
-        openRssManagerRoute={openRssManagerRoute}
-        filteredFeeds={filteredFeeds}
+        openAddFeedDialog={openAddFeedDialog}
+        openAddCategoryDialog={openAddCategoryDialog}
+        subscriptionGroups={subscriptionGroups}
+        unreadCountByFeedId={unreadCountByFeedId}
+        collapsedCategoryIds={collapsedCategoryIds}
+        toggleCategoryCollapsed={toggleCategoryCollapsed}
         selectedFeedId={selectedFeedId}
         openSettingsRoute={openSettingsRoute}
         closeMobilePanels={closeMobilePanels}
@@ -2597,6 +3120,8 @@ const MainShellCore = React.memo(function MainShellCore() {
         t={t}
         searchQuery={searchQuery}
         onSearchQueryChange={handleSearchQueryChange}
+        showUnreadOnly={showUnreadOnly}
+        onToggleUnreadOnly={handleToggleUnreadOnly}
         toggleListPanel={toggleListPanel}
         isSyncingFeeds={isSyncingFeeds}
         hasFeeds={hasFeeds}
@@ -2605,6 +3130,7 @@ const MainShellCore = React.memo(function MainShellCore() {
         syncStatusPrimary={syncStatusPrimary}
         syncStatusSecondary={syncStatusSecondary}
         filteredArticles={filteredArticles}
+        leavingUnreadIds={leavingUnreadIds}
         selectedArticleId={selectedArticleId}
         onSelectArticle={handleSelectArticle}
         formatArticleDate={formatArticleDate}
@@ -2613,6 +3139,7 @@ const MainShellCore = React.memo(function MainShellCore() {
       <ReaderPane
         t={t}
         activeArticle={activeArticle}
+        activeFeedIcon={activeFeedIcon}
         showList={showList}
         openSidebar={openSidebar}
         toggleListPanel={toggleListPanel}
@@ -2665,12 +3192,15 @@ const MainShellCore = React.memo(function MainShellCore() {
         setIsPlayingAudio={setIsPlayingAudio}
         setIsPausedAudio={setIsPausedAudio}
         setIsGeneratingAudio={setIsGeneratingAudio}
+        activeReadTimeLabel={activeReadTimeLabel}
       />
     </>
   ), [
+    activeReadTimeLabel,
     activeAiError,
     activeAiSummary,
     activeArticle,
+    activeFeedIcon,
     articleCustomFontStack,
     articleFontFamily,
     articlesCount,
@@ -2679,14 +3209,17 @@ const MainShellCore = React.memo(function MainShellCore() {
     commandItems,
     commandPaletteArticles,
     commandPaletteMode,
+    collapsedCategoryIds,
+    contextMenuCategory,
     contextMenuFeed,
     coverImageOverride,
     coverProxyUrl,
     feedContextMenu,
     filteredArticles,
-    filteredFeeds,
     fontSize,
     formatArticleDate,
+    handleDeleteCategory,
+    handleDeleteFeed,
     handleArticleContentClick,
     handleCopyLink,
     handleDeepDive,
@@ -2695,6 +3228,7 @@ const MainShellCore = React.memo(function MainShellCore() {
     handleMarkAllRead,
     handleOpenOriginal,
     handleSearchQueryChange,
+    handleToggleUnreadOnly,
     handleSelectArticle,
     handleToggleAudio,
     handleToggleRead,
@@ -2714,14 +3248,19 @@ const MainShellCore = React.memo(function MainShellCore() {
     isSyncingFeeds,
     isTranslating,
     lightboxSrc,
+    openAddCategoryDialog,
+    openAddFeedDialog,
+    openEditFeedDialog,
+    openEditFeedIconDialog,
     openFeedContextMenu,
-    openRssManagerRoute,
+    openRenameCategoryDialog,
     openSettingsRoute,
     openSidebar,
     proseTypographyFontClass,
     readerContentHtml,
     registerAddToast,
     searchQuery,
+    leavingUnreadIds,
     selectedArticleId,
     selectedCategory,
     selectedFeedId,
@@ -2739,7 +3278,9 @@ const MainShellCore = React.memo(function MainShellCore() {
     showList,
     showOfflineMiss,
     showSidebar,
+    showUnreadOnly,
     sidebarCategories,
+    subscriptionGroups,
     summaryDisabledReason,
     summaryLanguageLabel,
     syncStatusPrimary,
@@ -2756,6 +3297,9 @@ const MainShellCore = React.memo(function MainShellCore() {
     ttsIncludeAuthor,
     ttsIncludeSource,
     ttsProviderLabel,
+    toggleCategoryCollapsed,
+    unreadArticlesCount,
+    unreadCountByFeedId,
   ]);
 
   return (
@@ -2765,15 +3309,238 @@ const MainShellCore = React.memo(function MainShellCore() {
       <div className="relative flex min-h-0 flex-1">
         {shellPanes}
 
+        {showAddFeed && (
+          <div
+            className="fixed inset-0 z-[125] flex items-center justify-center bg-black/40 px-4"
+            onClick={() => setShowAddFeed(false)}
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleAddFeed();
+              }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+            >
+              <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">{t('sidebar.addSubscription')}</div>
+              <div className="mt-3 space-y-3">
+                <input
+                  type="text"
+                  value={newFeedName}
+                  onChange={(event) => setNewFeedName(event.target.value)}
+                  placeholder={t('rssManager.feedNamePlaceholder')}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+                />
+                <input
+                  type="url"
+                  value={newFeedUrl}
+                  onChange={(event) => setNewFeedUrl(event.target.value)}
+                  placeholder={t('rssManager.feedUrlPlaceholder')}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+                />
+                <CategoryDropdown
+                  value={newFeedCategory}
+                  options={categorySelectOptions}
+                  onChange={setNewFeedCategory}
+                />
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddFeed(false)}
+                  className="rounded-lg border border-stone-200 px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-95"
+                >
+                  {t('common.add')}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {showEditFeed && (
+          <div
+            className="fixed inset-0 z-[125] flex items-center justify-center bg-black/40 px-4"
+            onClick={() => {
+              setShowEditFeed(false);
+              setEditingFeedId(null);
+            }}
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleUpdateFeed();
+              }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+            >
+              <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">{t('sidebar.editSubscription')}</div>
+              <div className="mt-3 space-y-3">
+                <input
+                  type="text"
+                  value={editFeedName}
+                  onChange={(event) => setEditFeedName(event.target.value)}
+                  placeholder={t('rssManager.feedNamePlaceholder')}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+                />
+                <input
+                  type="url"
+                  value={editFeedUrl}
+                  onChange={(event) => setEditFeedUrl(event.target.value)}
+                  placeholder={t('rssManager.feedUrlPlaceholder')}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+                />
+                <CategoryDropdown
+                  value={editFeedCategory}
+                  options={categorySelectOptions}
+                  onChange={setEditFeedCategory}
+                />
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditFeed(false);
+                    setEditingFeedId(null);
+                  }}
+                  className="rounded-lg border border-stone-200 px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-95"
+                >
+                  {t('common.save')}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {showFeedIconEditor && (
+          <div
+            className="fixed inset-0 z-[125] flex items-center justify-center bg-black/40 px-4"
+            onClick={() => {
+              setShowFeedIconEditor(false);
+              setIconEditingFeedId(null);
+              setEditFeedIconUrl('');
+            }}
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                handleSaveFeedIcon();
+              }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+            >
+              <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">{t('sidebar.editIcon')}</div>
+              <div className="mt-3 space-y-2">
+                <input
+                  type="url"
+                  value={editFeedIconUrl}
+                  onChange={(event) => setEditFeedIconUrl(event.target.value)}
+                  placeholder={t('rssManager.customIconUrlPlaceholder')}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+                />
+                <div className="text-xs text-stone-500 dark:text-stone-400">{t('sidebar.iconHint')}</div>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowFeedIconEditor(false);
+                    setIconEditingFeedId(null);
+                    setEditFeedIconUrl('');
+                  }}
+                  className="rounded-lg border border-stone-200 px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditFeedIconUrl('');
+                  }}
+                  className="rounded-lg border border-stone-200 px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                >
+                  {t('rssManager.restoreAutoIcon')}
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-95"
+                >
+                  {t('common.save')}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {showCategoryEditor && (
+          <div
+            className="fixed inset-0 z-[125] flex items-center justify-center bg-black/40 px-4"
+            onClick={() => {
+              setShowCategoryEditor(false);
+              setEditingCategoryId(null);
+              setEditingCategoryName('');
+            }}
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                handleSubmitCategory();
+              }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+            >
+              <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">
+                {editingCategoryId ? t('sidebar.renameCategory') : t('sidebar.newCategory')}
+              </div>
+              <div className="mt-3">
+                <input
+                  type="text"
+                  value={editingCategoryName}
+                  onChange={(event) => setEditingCategoryName(event.target.value)}
+                  placeholder={t('rssManager.newCategoryPlaceholder')}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-700 outline-none focus:border-[var(--color-accent)] focus:bg-white focus:ring-2 focus:ring-[color:var(--color-accent-border)] dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100"
+                />
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCategoryEditor(false);
+                    setEditingCategoryId(null);
+                    setEditingCategoryName('');
+                  }}
+                  className="rounded-lg border border-stone-200 px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-95"
+                >
+                  {editingCategoryId ? t('common.save') : t('common.add')}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
       <MainShellOverlayController
         navigateWithDesktopFallback={navigateWithDesktopFallback}
-        preloadSettingsOverlay={preloadSettingsOverlay}
-        preloadRssManagerOverlay={preloadRssManagerOverlay}
         bindCloseOverlayRoute={bindCloseOverlayRoute}
         overlayOpenRef={overlayOpenRef}
         onOverlayRouteClosed={handleOverlayRouteClosed}
         markSettingsSyncPending={markSettingsSyncPending}
-        markFeedsSyncPending={markFeedsSyncPending}
       />
       </div>
     </div>

@@ -6,9 +6,14 @@ import {
   BookOpen,
   BrainCircuit,
   CheckCircle,
+  ChevronDown,
+  ChevronRight,
   Command,
   ExternalLink,
   Feather,
+  Filter,
+  Folder,
+  FolderPlus,
   Layout,
   Loader2,
   Maximize2,
@@ -16,8 +21,8 @@ import {
   Minimize2,
   Pause,
   Play,
+  Plus,
   RefreshCw,
-  Rss,
   Search,
   Share2,
   Settings,
@@ -40,6 +45,8 @@ import { ThemeToggleButton } from './common-ui'
 const LIST_VIRTUALIZATION_THRESHOLD = 40
 const LIST_ITEM_ESTIMATED_HEIGHT = 148
 const LIST_OVERSCAN_COUNT = 8
+const UNREAD_BADGE_CLASS =
+  'ml-auto inline-flex min-w-[1.6rem] shrink-0 items-center justify-center rounded-full border border-stone-300/70 bg-stone-200/90 px-1.5 py-0.5 text-xs font-medium leading-none tabular-nums text-stone-600 dark:border-stone-600/80 dark:bg-stone-700/80 dark:text-stone-200'
 
 export const SidebarPane = React.memo(function SidebarPane({
   showSidebar,
@@ -50,9 +57,14 @@ export const SidebarPane = React.memo(function SidebarPane({
   setSelectedCategory,
   setSelectedFeedId,
   articlesCount,
+  unreadArticlesCount,
   openFeedContextMenu,
-  openRssManagerRoute,
-  filteredFeeds,
+  openAddFeedDialog,
+  openAddCategoryDialog,
+  subscriptionGroups,
+  unreadCountByFeedId,
+  collapsedCategoryIds,
+  toggleCategoryCollapsed,
   selectedFeedId,
   openSettingsRoute,
   closeMobilePanels,
@@ -102,55 +114,145 @@ export const SidebarPane = React.memo(function SidebarPane({
                 )}
                 <cat.icon size={16} className={`mr-3 transition-colors ${selectedCategory === cat.id ? 'accent-text' : 'text-stone-400 group-hover/item:text-stone-600 dark:group-hover/item:text-stone-300'}`} />
                 {cat.name}
-                {cat.id === 'all' && <span className="ml-auto text-xs text-stone-400 font-normal bg-stone-100 dark:bg-stone-800 px-1.5 py-0.5 rounded-full">{articlesCount}</span>}
+                {cat.id === 'all' && (
+                  <span className={UNREAD_BADGE_CLASS}>
+                    {unreadArticlesCount}
+                  </span>
+                )}
               </Interactive>
             ))}
           </div>
 
-          <div onContextMenu={openFeedContextMenu}>
+          <div onContextMenu={(event) => openFeedContextMenu(event, { target: 'blank' })}>
             <div className="flex items-center justify-between px-3 mb-3">
               <div className="text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-widest opacity-80">
                 {t('nav.subscriptions')}
               </div>
-              <Interactive
-                onClick={openRssManagerRoute}
-                className="text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 transition-colors p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-800"
-                title={t('nav.openRssManager')}
-                aria-label={t('nav.openRssManager')}
-              >
-                <Rss size={12} />
-              </Interactive>
-            </div>
-            <ul className="space-y-1">
-              {filteredFeeds.map(feed => (
-                <li
-                  key={feed.id}
-                  onContextMenu={(event) => {
-                    event.stopPropagation()
-                    openFeedContextMenu(event, feed.id)
-                  }}
+              <div className="flex items-center gap-0.5">
+                <Interactive
+                  onClick={openAddCategoryDialog}
+                  className="text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 transition-colors p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-800"
+                  title={t('sidebar.newCategory')}
+                  aria-label={t('sidebar.newCategory')}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedFeedId(feed.id)
-                      setSelectedCategory('all')
+                  <FolderPlus size={12} />
+                </Interactive>
+                <Interactive
+                  onClick={() => openAddFeedDialog(selectedCategory === 'all' ? null : selectedCategory)}
+                  className="text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 transition-colors p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-800"
+                  title={t('sidebar.addSubscription')}
+                  aria-label={t('sidebar.addSubscription')}
+                >
+                  <Plus size={12} />
+                </Interactive>
+              </div>
+            </div>
+            <ul className="space-y-1.5">
+              {subscriptionGroups.map(group => {
+                const isExpanded = !collapsedCategoryIds[group.id]
+                const isCategoryActive = selectedCategory === group.id && selectedFeedId == null
+                const categoryUnreadCount = group.feeds.reduce(
+                  (total, feed) => total + (unreadCountByFeedId[feed.id] || 0),
+                  0,
+                )
+                return (
+                  <li
+                    key={group.id}
+                    onContextMenu={(event) => {
+                      event.stopPropagation()
+                      openFeedContextMenu(event, { target: 'category', categoryId: group.id })
                     }}
-                    className="w-full flex items-center justify-start gap-1 px-3 py-1.5 text-sm text-stone-500 dark:text-stone-400 rounded-md hover:bg-stone-200/50 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-200 transition-colors truncate group/feed"
-                    aria-current={selectedFeedId === feed.id ? 'true' : undefined}
-                    aria-label={t('nav.filterByFeed', { feed: feed.title })}
                   >
-                    <FeedIconBadge
-                      title={feed.title}
-                      icon={feed.icon}
-                      alt={feed.title}
-                      imageClassName="h-4 w-4 rounded-sm object-cover opacity-80 grayscale group-hover/feed:grayscale-0 transition-all"
-                      textClassName="w-4 flex justify-center text-[10px] opacity-60 grayscale group-hover/feed:grayscale-0 transition-all"
-                    />
-                    <span className="min-w-0 flex-1 truncate text-left opacity-90">{feed.title}</span>
-                  </button>
-                </li>
-              ))}
+                    <div
+                      className={`group/category flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors ${
+                        isCategoryActive
+                          ? 'bg-white dark:bg-stone-800 ring-1 ring-stone-200/70 dark:ring-stone-700'
+                          : 'hover:bg-stone-200/40 dark:hover:bg-stone-800/70'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategory(group.id)
+                          setSelectedFeedId(null)
+                        }}
+                        className="min-w-0 flex-1 flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-[13px] font-medium text-stone-600 dark:text-stone-300"
+                        aria-current={isCategoryActive ? 'true' : undefined}
+                      >
+                        <Folder size={14} className="shrink-0 text-stone-400 dark:text-stone-500" />
+                        <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                        <span className={UNREAD_BADGE_CLASS}>
+                          {categoryUnreadCount}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggleCategoryCollapsed(group.id)
+                        }}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-200 hover:text-stone-700 dark:hover:bg-stone-700 dark:hover:text-stone-200"
+                        aria-label={isExpanded ? t('sidebar.collapseCategory') : t('sidebar.expandCategory')}
+                      >
+                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <ul className="ml-3 mt-1 space-y-1 border-l border-stone-200/80 pl-3 dark:border-stone-700/80">
+                        {group.feeds.map(feed => {
+                          const unreadCount = unreadCountByFeedId[feed.id] || 0
+                          return (
+                            <li
+                              key={feed.id}
+                              onContextMenu={(event) => {
+                                event.stopPropagation()
+                                openFeedContextMenu(event, {
+                                  target: 'feed',
+                                  feedId: feed.id,
+                                  categoryId: group.id,
+                                })
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedFeedId(feed.id)
+                                  setSelectedCategory(group.id)
+                                }}
+                                className={`w-full flex items-center justify-start gap-1 px-2 py-1.5 text-sm rounded-md transition-colors truncate group/feed ${
+                                  selectedFeedId === feed.id
+                                    ? 'bg-white text-stone-900 shadow-sm ring-1 ring-stone-200/60 dark:bg-stone-800 dark:text-stone-100 dark:ring-stone-700'
+                                    : 'text-stone-500 dark:text-stone-400 hover:bg-stone-200/50 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-200'
+                                }`}
+                                aria-current={selectedFeedId === feed.id ? 'true' : undefined}
+                                aria-label={t('nav.filterByFeed', { feed: feed.title })}
+                              >
+                                <FeedIconBadge
+                                  title={feed.title}
+                                  icon={feed.icon}
+                                  alt={feed.title}
+                                  imageClassName="h-4 w-4 rounded-sm object-cover opacity-80 grayscale group-hover/feed:grayscale-0 transition-all"
+                                  textClassName="w-4 flex justify-center text-[10px] opacity-60 grayscale group-hover/feed:grayscale-0 transition-all"
+                                />
+                                <span className="min-w-0 flex-1 truncate text-left opacity-90">{feed.title}</span>
+                                <span className={UNREAD_BADGE_CLASS}>
+                                  {unreadCount}
+                                </span>
+                              </button>
+                            </li>
+                          )
+                        })}
+                        {!group.feeds.length && (
+                          <li className="px-2 py-1 text-xs text-stone-400 dark:text-stone-500">
+                            {t('sidebar.noSubscriptions')}
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           </div>
         </div>
@@ -178,6 +280,8 @@ export const ArticleListPane = React.memo(function ArticleListPane({
   t,
   searchQuery,
   onSearchQueryChange,
+  showUnreadOnly,
+  onToggleUnreadOnly,
   toggleListPanel,
   isSyncingFeeds,
   hasFeeds,
@@ -186,6 +290,7 @@ export const ArticleListPane = React.memo(function ArticleListPane({
   syncStatusPrimary,
   syncStatusSecondary,
   filteredArticles,
+  leavingUnreadIds,
   selectedArticleId,
   onSelectArticle,
   formatArticleDate,
@@ -325,6 +430,19 @@ export const ArticleListPane = React.memo(function ArticleListPane({
             <h2 className="text-xs font-bold uppercase tracking-widest text-stone-400 dark:text-stone-600">{t('nav.today')}</h2>
             <div className="flex items-center gap-1.5">
               <Interactive
+                className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors duration-200 ${
+                  showUnreadOnly
+                    ? 'border-[color:var(--color-accent-border)] bg-[var(--color-accent-soft)] text-[var(--color-accent-strong)] dark:bg-[var(--color-accent-soft-dark)] dark:text-stone-100'
+                    : 'border-stone-200 text-stone-500 hover:text-stone-800 dark:border-stone-700 dark:text-stone-400 dark:hover:text-stone-200'
+                }`}
+                onClick={onToggleUnreadOnly}
+                aria-pressed={showUnreadOnly}
+                aria-label={showUnreadOnly ? t('list.showAll') : t('list.onlyUnread')}
+                title={showUnreadOnly ? t('list.showAll') : t('list.onlyUnread')}
+              >
+                <Filter size={12} />
+              </Interactive>
+              <Interactive
                 className="text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 onClick={onManualRefreshAll}
                 aria-label={t('list.refreshNow')}
@@ -362,6 +480,7 @@ export const ArticleListPane = React.memo(function ArticleListPane({
                 hasSearchHighlight={hasSearchHighlight}
                 interfaceFontClass={interfaceFontClass}
                 dateLabel={formatArticleDate(article)}
+                isLeavingUnread={Boolean(leavingUnreadIds[article.id])}
                 animationDelayMs={shouldVirtualize ? 0 : Math.min(itemIndex, 10) * 40}
                 disableEntryAnimation={shouldVirtualize}
                 onSelectArticle={onSelectArticle}
@@ -387,6 +506,7 @@ const ArticleListItem = React.memo(function ArticleListItem({
   hasSearchHighlight,
   interfaceFontClass,
   dateLabel,
+  isLeavingUnread,
   animationDelayMs,
   disableEntryAnimation,
   onSelectArticle,
@@ -401,7 +521,7 @@ const ArticleListItem = React.memo(function ArticleListItem({
       onClick={handleSelect}
       className={`group cursor-pointer text-left px-5 py-4 border-b border-stone-50 dark:border-stone-900 hover:bg-stone-50/80 dark:hover:bg-stone-900/50 transition-all duration-200 relative ${disableEntryAnimation ? '' : 'animate-slide-in-right'} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent-border)] focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-stone-950 ${
         isSelected ? 'bg-[#f4f4f2] dark:bg-stone-900' : ''
-      } article-list-item`}
+      } ${isLeavingUnread ? 'pointer-events-none opacity-0 -translate-y-1 scale-[0.995]' : ''} article-list-item`}
       style={disableEntryAnimation ? undefined : { animationDelay: `${animationDelayMs}ms` }}
       aria-current={isSelected ? 'true' : undefined}
     >
@@ -448,6 +568,7 @@ const ArticleListItem = React.memo(function ArticleListItem({
   && prev.hasSearchHighlight === next.hasSearchHighlight
   && prev.interfaceFontClass === next.interfaceFontClass
   && prev.dateLabel === next.dateLabel
+  && prev.isLeavingUnread === next.isLeavingUnread
   && prev.animationDelayMs === next.animationDelayMs
   && prev.disableEntryAnimation === next.disableEntryAnimation
   && prev.onSelectArticle === next.onSelectArticle
@@ -457,6 +578,7 @@ const ReaderArticleContent = React.memo(function ReaderArticleContent({
   t,
   isLoadingArticle,
   activeArticle,
+  activeFeedIcon,
   isFocusMode,
   titleFontClass,
   formatArticleDate,
@@ -505,7 +627,20 @@ const ReaderArticleContent = React.memo(function ReaderArticleContent({
             <div className="flex flex-col">
               <span className="text-sm font-bold text-stone-900 dark:text-stone-200">{activeArticle.author}</span>
               <div className="flex items-center flex-wrap gap-2">
-                <span className="text-xs text-stone-400 dark:text-stone-500">{formatArticleDate(activeArticle)} - {activeArticle.feedName}</span>
+                <div className="inline-flex items-center gap-1.5 text-xs text-stone-400 dark:text-stone-500">
+                  <span>{formatArticleDate(activeArticle)}</span>
+                  <span>-</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <FeedIconBadge
+                      title={activeArticle.feedName}
+                      icon={activeFeedIcon}
+                      alt={activeArticle.feedName}
+                      imageClassName="h-3.5 w-3.5 rounded-sm object-cover"
+                      textClassName="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-stone-200 text-[9px] font-semibold leading-none text-stone-600 dark:bg-stone-700 dark:text-stone-200"
+                    />
+                    <span>{activeArticle.feedName}</span>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -611,6 +746,7 @@ const ReaderArticleContent = React.memo(function ReaderArticleContent({
 export const ReaderPane = React.memo(function ReaderPane({
   t,
   activeArticle,
+  activeFeedIcon,
   showList,
   openSidebar,
   toggleListPanel,
@@ -655,6 +791,7 @@ export const ReaderPane = React.memo(function ReaderPane({
   textSizeClass,
   proseTypographyFontClass,
   readerContentHtml,
+  activeReadTimeLabel,
   ttsIncludeAuthor,
   setTtsIncludeAuthor,
   ttsIncludeSource,
@@ -792,12 +929,22 @@ export const ReaderPane = React.memo(function ReaderPane({
             </span>
           ) : (
             <>
-              <div className="flex items-center gap-2 px-2 py-1 bg-stone-100 dark:bg-stone-900 rounded text-stone-600 dark:text-stone-400 transition-colors">
-                <span className="w-1.5 h-1.5 rounded-full bg-stone-400 dark:bg-stone-600"></span>
-                {activeArticle?.feedName}
-              </div>
-              <span className="text-stone-300 dark:text-stone-700">|</span>
-              <span className="font-mono text-stone-400 dark:text-stone-500">{t('toolbar.readSuffix', { value: activeArticle?.readTime || '' })}</span>
+              {activeArticle ? (
+                <>
+                  <div className="flex items-center gap-2 px-2 py-1 bg-stone-100 dark:bg-stone-900 rounded text-stone-600 dark:text-stone-400 transition-colors">
+                    <FeedIconBadge
+                      title={activeArticle.feedName}
+                      icon={activeFeedIcon}
+                      alt={activeArticle.feedName}
+                      imageClassName="h-3.5 w-3.5 rounded-sm object-cover"
+                      textClassName="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-stone-200 text-[9px] font-semibold leading-none text-stone-600 dark:bg-stone-700 dark:text-stone-200"
+                    />
+                    {activeArticle.feedName}
+                  </div>
+                  <span className="text-stone-300 dark:text-stone-700">|</span>
+                  <span className="font-mono text-stone-400 dark:text-stone-500">{t('toolbar.readSuffix', { value: activeReadTimeLabel || '' })}</span>
+                </>
+              ) : null}
             </>
           )}
         </div>
@@ -930,6 +1077,7 @@ export const ReaderPane = React.memo(function ReaderPane({
           t={t}
           isLoadingArticle={isLoadingArticle}
           activeArticle={activeArticle}
+          activeFeedIcon={activeFeedIcon}
           isFocusMode={isFocusMode}
           titleFontClass={titleFontClass}
           formatArticleDate={formatArticleDate}

@@ -2,6 +2,7 @@ import type { FeedRecord } from './types'
 import type { ArticleRecord } from '../articles/types'
 import { fetchRssViaProxy } from '../../shared/services/rssProxy'
 import { isFeedIconImage, normalizeFeedIconSource } from './icon'
+import { estimateReadMinutesFromContent, formatReadTimeMinutes } from '../articles/readTime'
 
 const backoffScheduleMs = [60_000, 300_000, 900_000, 3_600_000]
 
@@ -24,13 +25,6 @@ const formatDate = (value: string | null) => {
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
 const escapeHtml = (value: string) =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-
-const estimateReadTime = (html: string) => {
-  const text = stripHtml(html)
-  const words = text ? text.split(/\s+/).length : 0
-  const minutes = Math.max(1, Math.round(words / 200))
-  return `${minutes} min`
-}
 
 const hashString = (value: string) => {
   let hash = 0
@@ -96,7 +90,7 @@ const toArticleRecord = (
       link: item.link || undefined,
       isRead: false,
       isStarred: false,
-      readTime: '1 min',
+      readTime: formatReadTimeMinutes(estimateReadMinutesFromContent(preview || summary || item.title || '')),
     }
   }
 
@@ -115,7 +109,7 @@ const toArticleRecord = (
     link: item.link || undefined,
     isRead: false,
     isStarred: false,
-    readTime: estimateReadTime(content || summary),
+    readTime: formatReadTimeMinutes(estimateReadMinutesFromContent(content || summary)),
   }
 }
 

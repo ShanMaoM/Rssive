@@ -311,6 +311,38 @@ b {
   contain-intrinsic-size: 132px;
 }
 
+.settings-overlay-backdrop {
+  backdrop-filter: none;
+  will-change: opacity;
+}
+
+.settings-panel-shell {
+  contain: layout style paint;
+  transform: translateZ(0);
+}
+
+.settings-panel-header {
+  backdrop-filter: none;
+}
+
+.settings-panel-scroll,
+.settings-panel-nav {
+  overscroll-behavior: contain;
+  contain: layout style paint;
+  will-change: scroll-position;
+  -webkit-overflow-scrolling: touch;
+}
+
+.settings-performance-card {
+  content-visibility: auto;
+  contain: layout style paint;
+  contain-intrinsic-size: 340px;
+}
+
+.settings-section-content {
+  contain: layout style paint;
+}
+
 /* Typography - Drop Cap */
 .lead::first-letter {
   font-family: var(--font-article);
@@ -634,6 +666,10 @@ b {
   }
 
   .article-list-item {
+    contain-intrinsic-size: auto;
+  }
+
+  .settings-performance-card {
     contain-intrinsic-size: auto;
   }
 }

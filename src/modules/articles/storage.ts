@@ -136,3 +136,26 @@ export const toggleEntryStar = (entryId: number, sourceEntries?: ArticleRecord[]
     ...entry,
     isStarred: !entry.isStarred,
   }), sourceEntries)
+
+export const markEntriesRead = (entryIds: number[], sourceEntries?: ArticleRecord[]): ArticleRecord[] => {
+  if (!entryIds.length) {
+    return sourceEntries ?? loadEntries()
+  }
+  const existing = sourceEntries ?? loadEntries()
+  if (!existing.length) return existing
+
+  const targetIds = new Set(entryIds)
+  let changed = false
+  const updated = existing.map(entry => {
+    if (!targetIds.has(entry.id) || entry.isRead) return entry
+    changed = true
+    return {
+      ...entry,
+      isRead: true,
+    }
+  })
+
+  if (!changed) return existing
+  persist(updated)
+  return updated
+}
